@@ -261,7 +261,11 @@ try:
 					continue try
 
 				case msg := <-in:
-					printF(incoming, "%s: %s", magenta(msg.t), cyan(string(msg.b)))
+					if (*verbose) {
+						printF(incoming, "%s: %s", magenta(msg.t), cyan(string(msg.b)))
+					} else {
+						printF(incoming, "%s", cyan(string(msg.b)))
+					}
 				}
 			}
 		}
