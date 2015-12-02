@@ -14,6 +14,14 @@ go get github.com/gobwas/gws
 gws -u "ws://my.cool.address"
 ```
 
+Or
+
+```shell
+cat messages.json | gws -u "ws://my.cool.address"
+```
+
+Usage:
+
 
 ```
 -H string
