@@ -125,6 +125,10 @@ func wsWriter(conn *websocket.Conn, m <-chan []byte, e chan<- error) {
 			e <- err
 			return
 		}
+
+		if (*verbose) {
+			printF(info, green("--> %s"), string(b))
+		}
 	}
 }
 
