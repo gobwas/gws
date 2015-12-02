@@ -1,6 +1,6 @@
-# GWS – simple websocket client
+# :sparkles: gws
 
-> Simple globbing library.
+> CLI tool for websocket testing
 
 ## Install
 
