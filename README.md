@@ -31,5 +31,5 @@ gws -u "ws://my.cool.address"
 
 ## Why
 
-`gws` is highly inspired by [wsd](https://github.com/alexanderGugel/wsd) and (iocat)[https://github.com/moul/iocat]. But in both
+`gws` is highly inspired by [wsd](https://github.com/alexanderGugel/wsd) and [iocat](https://github.com/moul/iocat). But in both
  tools I found not existing features that I was needed some how.
