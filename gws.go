@@ -17,14 +17,14 @@ import (
 type prefix string
 
 const (
-	empty    = " "
-	input    = ">"
-	incoming = "<"
-	info     = "–"
-	theEnd   = "\u2020"
-	blockStart   = "("
+	empty      = " "
+	input      = ">"
+	incoming   = "<"
+	info       = "–"
+	theEnd     = "\u2020"
+	blockStart = "("
 	blockEnd   = ")"
-	raw   = "r"
+	raw        = "r"
 )
 
 const headersSeparator = ";"
@@ -34,7 +34,7 @@ var (
 	headers = flag.String("H", "", fmt.Sprintf("headers list\n\tformat:\n\t\t{ pair[ %q pair...] },\n\tpair:\n\t\t{ key %q value }", headersSeparator, headerAssignmentOperator))
 	url     = flag.String("u", "", "websocket url")
 	verbose = flag.Bool("v", false, "verbosity")
-	limit = flag.Int("l", 1, "limit of reconnections")
+	limit   = flag.Int("l", 1, "limit of reconnections")
 )
 
 var (
@@ -80,7 +80,7 @@ func (m MsgType) String() string {
 
 func printF(p prefix, format string, c ...interface{}) {
 	var (
-	prefix, end string
+		prefix, end string
 	)
 
 	prefix = strings.Repeat(" ", 2)
@@ -222,7 +222,7 @@ try:
 			inputClosed = true
 
 		default:
-		    if attempts >= *limit {
+			if attempts >= *limit {
 				break try
 			}
 
@@ -277,7 +277,7 @@ func dumpResponse(resp *http.Response) ([]byte, []byte, error) {
 	}
 
 	if resp.Request == nil {
-		return nil, nil,fmt.Errorf("nil request")
+		return nil, nil, fmt.Errorf("nil request")
 	}
 
 	req, err := httputil.DumpRequest(resp.Request, false)
