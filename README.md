@@ -2,6 +2,8 @@
 
 > CLI tool for websocket testing
 
+![Demo](https://cdn.rawgit.com/gobwas/gws/static/out.gif)
+
 ## Install
 
 ```shell
