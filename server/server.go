@@ -35,7 +35,6 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn, err := h.upgrader.Upgrade(w, r, h.headers)
 	h.respLock.Unlock()
 	if err != nil {
-		h.respLock.Unlock()
 		log.Println(err)
 		return
 	}
