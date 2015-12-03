@@ -127,7 +127,7 @@ func wsWriter(conn *websocket.Conn, m <-chan []byte, e chan<- error) {
 		}
 
 		if (*verbose) {
-			printF(info, green("--> %s"), string(b))
+			printF(info, yellow("%s"), string(b))
 		}
 	}
 }
@@ -177,8 +177,8 @@ func connect(u string, h http.Header) (*websocket.Conn, error) {
 	conn, response, wsErr := dialer.Dial(*url, h)
 	if *verbose {
 		req, res, _ := dumpResponse(response)
-		printF(raw, "%s", cyan(string(req)))
-		printF(raw, "%s", green(string(res)))
+		printF(raw, "%s", green(string(req)))
+		printF(raw, "%s", cyan(string(res)))
 	}
 	if wsErr != nil {
 		return nil, fmt.Errorf("dial websocket error: %s", wsErr)
