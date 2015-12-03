@@ -10,33 +10,45 @@
 go get github.com/gobwas/gws
 ```
 
-## Usage 
+## Usage exmaples
+
+Connect to the websocket server:
 
 ```shell
 gws -u "ws://my.cool.address"
 ```
 
-Or
+Run simple server and type response messages in terminal:
 
 ```shell
-cat messages.json | gws -u "ws://my.cool.address"
+gws -l ":8888" -resp=prompt
 ```
 
-Usage:
+Or just simple echo:
 
+```shell
+gws -l ":8888" -resp=echo
+```
+
+Usage info:
 
 ```
--H string
-    headers list
-    format:
-            { pair[ ";" pair...] },
-    pair:
-            { key ":" value }
--l int
-    limit of reconnections (default 1)
--u string
-    websocket url
--v    verbosity
+Usage of gws:
+  -H string
+        list of headers to be passed during handshake
+        format:
+                { pair[ ";" pair...] },
+        pair:
+                { key ":" value }
+  -l string
+        run ws server and listen this address
+  -resp value
+        how should server response on message (echo, mirror, prompt) (default mirror)
+  -u string
+        websocket server url
+  -v    show additional debugging info
+  -x int
+        try to reconnect x times (default 1)
 ```
 
 ## Why

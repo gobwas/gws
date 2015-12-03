@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/fatih/color"
 	"github.com/gorilla/websocket"
+	"github.com/gobwas/gws/server"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -30,15 +31,26 @@ const (
 const headersSeparator = ";"
 const headerAssignmentOperator = ":"
 
-var (
-	headers = flag.String("H", "", fmt.Sprintf("headers list\n\tformat:\n\t\t{ pair[ %q pair...] },\n\tpair:\n\t\t{ key %q value }", headersSeparator, headerAssignmentOperator))
-	url     = flag.String("u", "", "websocket url")
-	verbose = flag.Bool("v", false, "verbosity")
-	limit   = flag.Int("l", 1, "limit of reconnections")
+const (
+	echo   = "echo"
+	mirror = "mirror"
+	prompt = "prompt"
 )
 
 var (
-	black   = color.New(color.FgBlack).SprintFunc()
+	url       = flag.String("u", "", "websocket server url")
+	headers   = flag.String("H", "", fmt.Sprintf("list of headers to be passed during handshake\n\tformat:\n\t\t{ pair[ %q pair...] },\n\tpair:\n\t\t{ key %q value }", headersSeparator, headerAssignmentOperator))
+	verbose   = flag.Bool("v", false, "show additional debugging info")
+	limit     = flag.Int("x", 1, "try to reconnect x times")
+	listen    = flag.String("l", "", "run ws server and listen this address")
+	responder = &ResponderFlag{mirror, []string{echo, mirror, prompt}}
+)
+
+func init() {
+	flag.Var(responder, "resp", fmt.Sprintf("how should server response on message (%s)", strings.Join(responder.e, ", ")))
+}
+
+var (
 	red     = color.New(color.FgRed).SprintFunc()
 	magenta = color.New(color.FgMagenta).SprintFunc()
 	green   = color.New(color.FgGreen).SprintFunc()
@@ -76,6 +88,27 @@ func (m MsgType) String() string {
 	default:
 		return "UnknownMessage"
 	}
+}
+
+type ResponderFlag struct {
+	v string
+	e []string
+}
+func (r *ResponderFlag) Set(s string) error {
+	for _, e := range r.e {
+		if e == s {
+			r.v = s
+			return nil
+		}
+	}
+
+	return fmt.Errorf("expecting one of %s", r.e)
+}
+func (r ResponderFlag) String() string {
+	return r.v
+}
+func (r ResponderFlag) Get() interface{} {
+	return r.v
 }
 
 func printF(p prefix, format string, c ...interface{}) {
@@ -126,7 +159,7 @@ func wsWriter(conn *websocket.Conn, m <-chan []byte, e chan<- error) {
 			return
 		}
 
-		if (*verbose) {
+		if *verbose {
 			printF(info, yellow("%s"), string(b))
 		}
 	}
@@ -190,11 +223,6 @@ func connect(u string, h http.Header) (*websocket.Conn, error) {
 func main() {
 	flag.Parse()
 
-	if *url == "" {
-		flag.Usage()
-		os.Exit(1)
-	}
-
 	var h http.Header
 	if *headers != "" {
 		h = make(http.Header)
@@ -206,6 +234,29 @@ func main() {
 
 			h.Add(strings.TrimSpace(pair[:i]), strings.TrimSpace(pair[i+1:]))
 		}
+	}
+
+	if *listen != "" {
+		var r server.Responder
+		switch responder.Get() {
+		case echo:
+			r = server.EchoResponder
+		case mirror:
+			r = server.MirrorResponder
+		case prompt:
+			r = server.PromptResponder
+		default:
+			fmt.Println(red("unknown responder type"))
+			os.Exit(1)
+		}
+
+		fmt.Println(server.Listen(*listen, h, r))
+		return
+	}
+
+	if *url == "" {
+		flag.Usage()
+		os.Exit(1)
 	}
 
 	// start to read input messages
@@ -265,7 +316,7 @@ try:
 					continue try
 
 				case msg := <-in:
-					if (*verbose) {
+					if *verbose {
 						printF(incoming, "%s: %s", magenta(msg.t), cyan(string(msg.b)))
 					} else {
 						printF(incoming, "%s", cyan(string(msg.b)))
