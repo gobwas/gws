@@ -1,19 +1,19 @@
 package server
 
 import (
+	"bufio"
+	"fmt"
+	"github.com/fatih/color"
 	"github.com/gorilla/websocket"
 	"io/ioutil"
 	"log"
 	"net/http"
-	"bufio"
 	"os"
-	"github.com/fatih/color"
-	"fmt"
 	"sync"
 )
 
 type wsHandler struct {
-	respLock sync.Mutex
+	respLock  sync.Mutex
 	upgrader  websocket.Upgrader
 	headers   http.Header
 	responder Responder
@@ -111,7 +111,8 @@ func MirrorResponder(t int, msg []byte) (r []byte, ok bool, err error) {
 }
 
 var green = color.New(color.FgGreen).SprintFunc()
-func PromptResponder(t int, msg[]byte) (r []byte, ok bool, err error) {
+
+func PromptResponder(t int, msg []byte) (r []byte, ok bool, err error) {
 	fmt.Print(green("> "))
 	reader := bufio.NewReader(os.Stdin)
 	resp, _ := reader.ReadSlice('\n')
