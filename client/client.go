@@ -10,6 +10,8 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
+	"strings"
 )
 
 var (
@@ -19,7 +21,9 @@ var (
 	cyan    = color.New(color.FgCyan).SprintFunc()
 )
 
-func Go(u string, h http.Header, r io.Reader, verbose bool, limit int) {
+const HeaderOrigin = "Origin"
+
+func Go(u string, h http.Header, r io.Reader, verbose bool, limit int) error {
 	// start to read input messages
 	out := make(chan []byte)
 	eof := make(chan error)
@@ -29,6 +33,27 @@ func Go(u string, h http.Header, r io.Reader, verbose bool, limit int) {
 		inputClosed bool
 		attempts    int
 	)
+
+	if strings.Index(u, "://") == -1 {
+		u = fmt.Sprintf("ws://%s", u)
+	}
+
+	uri, err := url.Parse(u)
+	if err != nil {
+		return err
+	}
+
+	if uri.Scheme == "" {
+		uri.Scheme = "ws"
+	}
+
+	if h == nil {
+		h = make(http.Header)
+	}
+
+	if o := h.Get(HeaderOrigin); o == "" {
+		h.Set(HeaderOrigin, uri.Host)
+	}
 
 try:
 	for !inputClosed {
@@ -48,7 +73,7 @@ try:
 			attempts++
 
 			dialer := &websocket.Dialer{}
-			conn, resp, err := dialer.Dial(u, h)
+			conn, resp, err := dialer.Dial(uri.String(), h)
 			if verbose {
 				req, res, _ := dumpResponse(resp)
 				printF(raw, "%s", green(string(req)))
@@ -92,6 +117,8 @@ try:
 			}
 		}
 	}
+
+	return nil
 }
 
 func dumpResponse(resp *http.Response) ([]byte, []byte, error) {
