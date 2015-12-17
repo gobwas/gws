@@ -52,7 +52,20 @@ func Go(u string, h http.Header, r io.Reader, verbose bool, limit int) error {
 	}
 
 	if o := h.Get(HeaderOrigin); o == "" {
-		h.Set(HeaderOrigin, uri.Host)
+		var s string
+		switch uri.Scheme {
+		case "wss":
+			s = "https"
+		default:
+			s = "http"
+		}
+
+		orig := url.URL{
+			Scheme: s,
+			Host:   uri.Host,
+		}
+
+		h.Set(HeaderOrigin, orig.String())
 	}
 
 try:
