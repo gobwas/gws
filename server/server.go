@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"github.com/fatih/color"
+	"github.com/gobwas/glob"
 	"github.com/gorilla/websocket"
 	"io/ioutil"
 	"log"
@@ -15,16 +16,32 @@ import (
 type wsHandler struct {
 	respLock  sync.Mutex
 	upgrader  websocket.Upgrader
-	headers   http.Header
+	config    Config
 	responder Responder
 }
 
+type Config struct {
+	Headers http.Header
+	Origin  string
+}
+
+const headerOrigin = "Origin"
+
 type Responder func(int, []byte) ([]byte, bool, error)
 
-func newWsHandler(h http.Header, r Responder) *wsHandler {
+func newWsHandler(c Config, r Responder) *wsHandler {
+	u := websocket.Upgrader{}
+
+	if c.Origin != "" {
+		originChecker := glob.New(c.Origin)
+		u.CheckOrigin = func(r *http.Request) bool {
+			return originChecker.Match(r.Header.Get(headerOrigin))
+		}
+	}
+
 	return &wsHandler{
-		upgrader:  websocket.Upgrader{},
-		headers:   h,
+		upgrader:  u,
+		config:    c,
 		responder: r,
 	}
 }
@@ -32,7 +49,7 @@ func newWsHandler(h http.Header, r Responder) *wsHandler {
 func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// take lock on read new connection
 	h.respLock.Lock()
-	conn, err := h.upgrader.Upgrade(w, r, h.headers)
+	conn, err := h.upgrader.Upgrade(w, r, h.config.Headers)
 	h.respLock.Unlock()
 	if err != nil {
 		log.Println(err)
@@ -88,9 +105,9 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func Listen(addr string, h http.Header, r Responder) error {
+func Listen(addr string, c Config, r Responder) error {
 	log.Println("ready to listen", addr)
-	return http.ListenAndServe(addr, newWsHandler(h, r))
+	return http.ListenAndServe(addr, newWsHandler(c, r))
 }
 
 func EchoResponder(t int, msg []byte) ([]byte, bool, error) {

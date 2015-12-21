@@ -21,11 +21,13 @@ const (
 )
 
 var (
-	url       = flag.String("u", "", "websocket server url")
+	url       = flag.String("u", "", "websocket url to connect")
 	headers   = flag.String("H", "", fmt.Sprintf("list of headers to be passed during handshake\n\tformat:\n\t\t{ pair[ %q pair...] },\n\tpair:\n\t\t{ key %q value }", headersSeparator, headerAssignmentOperator))
 	listen    = flag.String("l", "", "run ws server and listen this address")
 	verbose   = flag.Bool("v", false, "show additional debugging info")
 	limit     = flag.Int("x", 1, "try to reconnect x times")
+	script    = flag.String("s", "", "use lua script to perform action")
+	origin    = flag.String("o", "", "use this glob pattern for server origin checks")
 	responder = &ResponderFlag{mirror, []string{echo, mirror, prompt}}
 	red       = color.New(color.FgRed).SprintFunc()
 )
@@ -61,7 +63,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		fmt.Println(server.Listen(*listen, h, r))
+		fmt.Println(server.Listen(*listen, server.Config{h, *origin}, r))
 
 		os.Exit(0)
 		return
