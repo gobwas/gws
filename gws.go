@@ -63,7 +63,13 @@ func main() {
 			os.Exit(1)
 		}
 
-		fmt.Println(server.Listen(*listen, server.Config{h, *origin}, r))
+		cfg := server.Config{
+			Headers: h,
+			Origin:  *origin,
+			Verbose: *verbose,
+		}
+		fmt.Println("CFG", cfg)
+		fmt.Println(server.Listen(*listen, cfg, r))
 
 		os.Exit(0)
 		return

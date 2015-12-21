@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"sync"
 )
@@ -23,6 +24,7 @@ type wsHandler struct {
 type Config struct {
 	Headers http.Header
 	Origin  string
+	Verbose bool
 }
 
 const headerOrigin = "Origin"
@@ -47,6 +49,15 @@ func newWsHandler(c Config, r Responder) *wsHandler {
 }
 
 func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.config.Verbose {
+		req, err := httputil.DumpRequest(r, false)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		log.Println("new request", string(req))
+	}
+
 	// take lock on read new connection
 	h.respLock.Lock()
 	conn, err := h.upgrader.Upgrade(w, r, h.config.Headers)
