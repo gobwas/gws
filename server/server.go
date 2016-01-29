@@ -35,7 +35,7 @@ func newWsHandler(c Config, r Responder) *wsHandler {
 	u := websocket.Upgrader{}
 
 	if c.Origin != "" {
-		originChecker := glob.New(c.Origin)
+		originChecker := glob.MustCompile(c.Origin)
 		u.CheckOrigin = func(r *http.Request) bool {
 			return originChecker.Match(r.Header.Get(headerOrigin))
 		}
