@@ -1,57 +1,71 @@
 package client
 
 import (
-	"bufio"
+	"flag"
 	"fmt"
-	"github.com/fatih/color"
+	"github.com/gobwas/gws/cli"
+	"github.com/gobwas/gws/cli/color"
+	cliInput "github.com/gobwas/gws/cli/input"
+	"github.com/gobwas/gws/gws"
+	luaClient "github.com/gobwas/gws/lua/client"
+	luaServer "github.com/gobwas/gws/lua/server"
+	"github.com/gobwas/gws/util"
+	"github.com/gobwas/gws/util/headers"
 	"github.com/gobwas/gws/ws"
 	"github.com/gorilla/websocket"
+	"github.com/yuin/gopher-lua"
 	"io"
-	"io/ioutil"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
+	"stash.mail.ru/scm/ego/easygo.git/log"
 	"strings"
+	"sync"
+	"time"
 )
 
 var (
-	red     = color.New(color.FgRed).SprintFunc()
-	magenta = color.New(color.FgMagenta).SprintFunc()
-	green   = color.New(color.FgGreen).SprintFunc()
-	cyan    = color.New(color.FgCyan).SprintFunc()
+	uri     = flag.String("client.url", ":3000", "websocket url to connect")
+	limit   = flag.Int("client.try", 1, "try to reconnect x times")
+	script  = flag.String("client.script", "", "use lua script to perform action")
+	threads = flag.Int("client.threads", 1, "how many threads (clients) start to initialize with script")
 )
 
-const HeaderOrigin = "Origin"
+const headerOrigin = "Origin"
 
-func Go(u string, h http.Header, r io.Reader, verbose bool, limit int) error {
-	// start to read input messages
-	out := make(chan []byte)
-	eof := make(chan error)
-	go ioReader(r, out, eof)
+//func getConn(uri url.URL, headers http.Header) (resp http.Response, conn websocket.Conn, err error) {
+//	dialer := &websocket.Dialer{}
+//	conn, resp, err = dialer.Dial(uri.String(), headers)
+//	return
+//}
 
-	var (
-		inputClosed bool
-		attempts    int
-	)
+type config struct {
+	headers http.Header
+	uri     *url.URL
+}
 
+func Go() error {
+	u := *uri
+
+	h, err := headers.Parse(gws.Headers)
+	if err != nil {
+		return gws.UsageError{err}
+	}
+
+	// prevent false error on parsing url
 	if strings.Index(u, "://") == -1 {
 		u = fmt.Sprintf("ws://%s", u)
 	}
-
 	uri, err := url.Parse(u)
 	if err != nil {
 		return err
 	}
-
 	if uri.Scheme == "" {
 		uri.Scheme = "ws"
 	}
 
-	if h == nil {
-		h = make(http.Header)
-	}
-
-	if o := h.Get(HeaderOrigin); o == "" {
+	// by default, set the same origin
+	// to avoid same origin policy check on connections
+	if orig := h.Get(headerOrigin); orig == "" {
 		var s string
 		switch uri.Scheme {
 		case "wss":
@@ -59,166 +73,174 @@ func Go(u string, h http.Header, r io.Reader, verbose bool, limit int) error {
 		default:
 			s = "http"
 		}
-
 		orig := url.URL{
 			Scheme: s,
 			Host:   uri.Host,
 		}
-
-		h.Set(HeaderOrigin, orig.String())
+		h.Set(headerOrigin, orig.String())
 	}
 
-try:
-	for !inputClosed {
-		select {
-		case <-eof:
-			close(out)
-			inputClosed = true
+	c := config{
+		uri:     uri,
+		headers: h,
+	}
 
-		default:
-			if attempts >= limit {
-				break try
+	if *script != "" {
+		return GoLua(c)
+	}
+
+	return GoIO(c)
+}
+
+func GoLua(c config) error {
+	wg := sync.WaitGroup{}
+	for i := 0; i < *threads; i++ {
+		wg.Add(1)
+
+		go func() {
+			l := lua.NewState()
+			l.PreloadModule(luaServer.ModuleName, luaServer.Exports)
+			l.PreloadModule(luaClient.ModuleName, luaClient.Exports)
+			if err := l.DoFile(*script); err != nil {
+				log.Printf("load #%d lua script error: %s\n", i, err)
+				l.Close()
+				wg.Done()
+				return
 			}
 
-			printF(blockStart, "")
-			printF(info, "establishing connection..(%d)", attempts)
-
-			attempts++
-
+			// create connection
 			dialer := &websocket.Dialer{}
-			conn, resp, err := dialer.Dial(uri.String(), h)
-			if verbose {
-				req, res, _ := dumpResponse(resp)
-				printF(raw, "%s", green(string(req)))
-				printF(raw, "%s", cyan(string(res)))
-			}
+			conn, _, err := dialer.Dial(c.uri.String(), c.headers)
 			if err != nil {
-				printF(info, "%s %s", magenta(err), red("could not connect"))
-				printF(blockEnd, "")
-				continue try
+				log.Printf("connection for #%d lua script error: %s\n", i, err)
+				l.Close()
+				wg.Done()
+				return
 			}
 
-			printF(info, "connected to %s", green(u))
-			printF(empty, "")
+			done := make(chan struct{})
+			input := ws.ReadFromConn(conn, done)
 
-			errors := make(chan error)
-			in := make(chan message)
-
-			go wsWriter(conn, out, errors)
-			go wsReader(conn, in, errors)
-
-			for {
-				select {
-				case err := <-errors:
-					if err == io.EOF {
-						printF(theEnd, "%s %s", magenta(err), red("server has closed connection"))
+			thread := l.NewTable()
+			l.SetFuncs(thread, map[string]lua.LGFunction{
+				"send": func(L *lua.LState) int {
+					msg := L.ToString(1)
+					err := ws.WriteToConn(conn, ws.TextMessage, []byte(msg))
+					if err != nil {
+						L.Push(lua.LString(err.Error()))
 					} else {
-						printF(info, "%s %s", magenta(err), red("unknown error"))
+						L.Push(lua.LString(""))
 					}
-
-					printF(blockEnd, "")
-
-					continue try
-
-				case msg := <-in:
-					if verbose {
-						printF(incoming, "%s: %s", magenta(msg.t), cyan(string(msg.b)))
+					return 1
+				},
+				"receive": func(L *lua.LState) int {
+					msg := <-input
+					if msg.Err != nil {
+						L.Push(lua.LString(""))
+						L.Push(lua.LString(msg.Err.Error()))
 					} else {
-						printF(incoming, "%s", cyan(string(msg.b)))
+						L.Push(lua.LString(string(msg.Data)))
+						L.Push(lua.LString(""))
 					}
-				}
+					return 2
+				},
+				"die": func(L *lua.LState) int {
+					close(done)
+					return 0
+				},
+				"set": func(L *lua.LState) int {
+					//					log.Println("calling set with:", L.ToInt(3))
+					return 0
+				},
+			})
+
+			err = l.CallByParam(lua.P{
+				Fn:      l.GetGlobal("setup"),
+				NRet:    0,
+				Protect: true,
+			}, thread)
+			if err != nil {
+				log.Printf("setup #%d error: %s\n", i, err)
 			}
-		}
+
+			wg.Done()
+			l.Close()
+			conn.Close()
+		}()
 	}
 
+	wg.Wait()
 	return nil
 }
 
-func dumpResponse(resp *http.Response) ([]byte, []byte, error) {
-	if resp == nil {
-		return nil, nil, fmt.Errorf("nil response")
+//func GoIO(u string, h http.Header, r io.Reader, verbose bool, limit int, l *lua.LState) error {
+func GoIO(c config) error {
+	var conn *websocket.Conn
+	var err error
+	for i := 0; i < *limit; i++ {
+		conn, err = getConn(c.uri, c.headers)
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Millisecond * time.Duration(100*i))
 	}
-
-	if resp.Request == nil {
-		return nil, nil, fmt.Errorf("nil request")
-	}
-
-	req, err := httputil.DumpRequest(resp.Request, false)
 	if err != nil {
-		return nil, nil, err
+		cli.Printf(cli.PrefixTheEnd, "could not connect: %s", color.Red(err))
+		return err
 	}
 
-	res, err := httputil.DumpResponse(resp, false)
+	done := make(chan struct{})
+	output, err := cliInput.ReadFromStdReadline(done)
 	if err != nil {
-		return req, nil, err
+		return err
 	}
-
-	return req, res, nil
-}
-
-func wsWriter(conn *websocket.Conn, m <-chan []byte, e chan<- error) {
-	for b := range m {
-		writer, err := conn.NextWriter(websocket.TextMessage)
-		if err != nil {
-			e <- io.EOF
-			return
-		}
-
-		_, err = writer.Write(b)
-		if err != nil {
-			e <- err
-			return
-		}
-
-		err = writer.Close()
-		if err != nil {
-			e <- err
-			return
-		}
-	}
-}
-
-func wsReader(conn *websocket.Conn, m chan<- message, e chan<- error) {
-	for {
-		t, r, err := conn.NextReader()
-		if err != nil {
-			e <- io.EOF
-			return
-		}
-
-		msg, err := ioutil.ReadAll(r)
-		if err != nil {
-			e <- err
-			return
-		}
-
-		m <- message{ws.MsgType(t), msg}
-	}
-}
-
-func ioReader(r io.Reader, to chan<- []byte, eof chan<- error) {
-	var buf []byte
-	reader := bufio.NewReader(r)
+	input := ws.ReadFromConn(conn, done)
 
 	for {
-		b, err := reader.ReadByte()
-		if err != nil {
-			eof <- err
-			return
-		}
+		select {
+		case in := <-input:
+			if in.Err != nil {
+				if in.Err == io.EOF {
+					cli.Printf(cli.PrefixTheEnd, "%s %s", color.Magenta(in.Err), color.Red("server has closed connection"))
+				} else {
+					cli.Printf(cli.PrefixInfo, "%s %s", color.Magenta(in.Err), color.Red("unknown error"))
+				}
 
-		if b == '\n' {
-			to <- buf
-			buf = nil
-			printF(input, "")
-			continue
-		}
+				cli.Printf(cli.PrefixBlockEnd, "")
+				return in.Err
+			}
 
-		buf = append(buf, b)
+			cli.Printf(cli.PrefixIncoming, "%s: %s", color.Magenta(in.Kind), color.Cyan(string(in.Data)))
+
+		case out := <-output:
+			if out.Err != nil {
+				cli.Printf(cli.PrefixTheEnd, "%s %s", color.Magenta(out.Err), color.Red("input closed"))
+				return out.Err
+			}
+
+			err := ws.WriteToConn(conn, ws.TextMessage, out.Data)
+			if err != nil {
+				cli.Printf(cli.PrefixInfo, "%s", color.Red(err))
+			}
+		}
 	}
 }
 
-type message struct {
-	t ws.MsgType
-	b []byte
+func getConn(uri *url.URL, h http.Header) (*websocket.Conn, error) {
+	dialer := &websocket.Dialer{}
+	conn, resp, err := dialer.Dial(uri.String(), h)
+	if gws.Verbose {
+		req, res, _ := util.DumpRequestResponse(resp)
+		cli.Printf(cli.PrefixRaw, "%s", color.Green(string(req)))
+		cli.Printf(cli.PrefixRaw, "%s", color.Cyan(string(res)))
+	}
+	if err != nil {
+		cli.Printf(cli.PrefixInfo, "%s %s", color.Magenta(err), color.Red("could not connect"))
+		return nil, err
+	}
+
+	cli.Printf(cli.PrefixInfo, "connected to %s", color.Green(uri.String()))
+	cli.Printf(cli.PrefixEmpty, "")
+
+	return conn, nil
 }

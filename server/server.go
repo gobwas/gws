@@ -1,35 +1,114 @@
 package server
 
 import (
-	"bufio"
+	"errors"
+	"flag"
 	"fmt"
-	"github.com/fatih/color"
 	"github.com/gobwas/glob"
+	"github.com/gobwas/gws/cli/color"
+	"github.com/gobwas/gws/cli/input"
+	"github.com/gobwas/gws/gws"
+	"github.com/gobwas/gws/util/headers"
+	"github.com/gobwas/gws/ws"
 	"github.com/gorilla/websocket"
-	"io/ioutil"
+	"gopkg.in/readline.v1"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
+var (
+	listen    = flag.String("server.listen", ":3000", "run ws server and listen this address")
+	origin    = flag.String("server.origin", "", "use this glob pattern for server origin checks")
+	heartbit  = flag.String("server.heartbit", "5s", "server statistics dump interval")
+	responder = &ResponderFlag{null, []string{echo, mirror, prompt, null}}
+)
+
+func init() {
+	flag.Var(responder, "server.responder", fmt.Sprintf("how should server response on message (%s)", strings.Join(responder.expect, ", ")))
+}
+
+const (
+	echo   = "echo"
+	mirror = "mirror"
+	prompt = "prompt"
+	null   = "null"
+)
+
+func Go() error {
+	h, err := headers.Parse(gws.Headers)
+	if err != nil {
+		return gws.UsageError{err}
+	}
+
+	hb, err := time.ParseDuration(*heartbit)
+	if err != nil {
+		return gws.UsageError{err}
+	}
+
+	var r Responder
+	switch responder.Get() {
+	case echo:
+		r = EchoResponder
+	case mirror:
+		r = MirrorResponder
+	case prompt:
+		r = PromptResponder
+	case null:
+		r = DevNullResponder
+	default:
+		return errors.New("unknown responder type")
+	}
+
+	handler := newWsHandler(Config{
+		Headers:  h,
+		Origin:   *origin,
+		Heartbit: hb,
+	}, r)
+
+	handler.Init()
+
+	log.Println("ready to listen", *listen)
+	return http.ListenAndServe(*listen, handler)
+}
+
 type wsHandler struct {
-	respLock  sync.Mutex
-	upgrader  websocket.Upgrader
-	config    Config
-	responder Responder
+	mu sync.Mutex
+
+	upgrader   websocket.Upgrader
+	config     Config
+	responder  Responder
+	sig        chan os.Signal
+	nextID     uint64
+	connsCount uint64
+	conns      map[uint64]connDescriptor
+
+	requests uint64
 }
 
 type Config struct {
-	Headers http.Header
-	Origin  string
-	Verbose bool
+	Headers  http.Header
+	Origin   string
+	Heartbit time.Duration
+}
+
+type connDescriptor struct {
+	conn   *websocket.Conn
+	notice chan []byte
+	done   <-chan struct{}
 }
 
 const headerOrigin = "Origin"
 
-type Responder func(int, []byte) ([]byte, bool, error)
+type Responder func(ws.MsgType, []byte) ([]byte, error)
 
 func newWsHandler(c Config, r Responder) *wsHandler {
 	u := websocket.Upgrader{}
@@ -45,11 +124,80 @@ func newWsHandler(c Config, r Responder) *wsHandler {
 		upgrader:  u,
 		config:    c,
 		responder: r,
+		sig:       make(chan os.Signal, 1),
+		conns:     make(map[uint64]connDescriptor),
 	}
 }
 
+func (h *wsHandler) Init() {
+	signal.Notify(h.sig, os.Interrupt)
+	go func() {
+	listening:
+		for _ = range h.sig {
+			if h.connsCount == 0 {
+				os.Exit(0)
+			}
+
+			h.mu.Lock()
+			{
+				var connId uint64
+				if h.connsCount > 1 {
+					var items []*readline.PrefixCompleter
+					for id := range h.conns {
+						items = append(items, readline.PcItem(string(id)))
+					}
+					completer := readline.NewPrefixCompleter(items...)
+
+					r, err := input.Readline(&readline.Config{
+						Prompt:       color.Green("> ") + "select connection id: ",
+						AutoComplete: completer,
+					})
+					if err != nil {
+						if err == readline.ErrInterrupt {
+							os.Exit(0)
+						}
+						log.Println("readline error:", err)
+						continue listening
+					}
+
+					connId, err = strconv.ParseUint(string(r), 10, 64)
+					if err != nil {
+						log.Println("readline error:", err)
+						continue listening
+					}
+				} else {
+					connId = 1
+				}
+
+				r, err := input.Readline(&readline.Config{
+					Prompt:      color.Green("> ") + fmt.Sprintf("notification for the connection #%d: ", connId),
+					HistoryFile: "/tmp/gws_readline_server_notice.tmp",
+				})
+				if err != nil {
+					if err == readline.ErrInterrupt {
+						os.Exit(0)
+					}
+
+					log.Println("readline error:", err)
+					continue listening
+				}
+
+				h.conns[connId].notice <- r
+			}
+			h.mu.Unlock()
+		}
+	}()
+
+	go func() {
+		for range time.Tick(h.config.Heartbit) {
+			v := atomic.SwapUint64(&h.requests, 0)
+			log.Printf("RPS: (%d) %.2f\n", v, float64(v/uint64(h.config.Heartbit.Seconds())))
+		}
+	}()
+}
+
 func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.config.Verbose {
+	if gws.Verbose {
 		req, err := httputil.DumpRequest(r, false)
 		if err != nil {
 			log.Println(err)
@@ -59,92 +207,85 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// take lock on read new connection
-	h.respLock.Lock()
+	h.mu.Lock()
 	conn, err := h.upgrader.Upgrade(w, r, h.config.Headers)
-	h.respLock.Unlock()
 	if err != nil {
 		log.Println(err)
+		h.mu.Unlock()
 		return
 	}
-	defer conn.Close()
+	h.connsCount++
+	h.nextID++
+	id := h.nextID
+	desc := connDescriptor{
+		conn:   conn,
+		notice: make(chan []byte, 1),
+		done:   make(chan struct{}),
+	}
+	h.conns[id] = desc
+	defer func() {
+		conn.Close()
+		h.mu.Lock()
+		delete(h.conns, id)
+		h.connsCount--
+		h.mu.Unlock()
 
-	log.Println("establised new connection from", r.RemoteAddr)
+		if gws.Verbose {
+			log.Printf("connection #%d closed\n", id)
+		}
+	}()
+	h.mu.Unlock()
+
+	if gws.Verbose {
+		log.Printf("establised connection #%d from %q\n", id, r.RemoteAddr)
+	}
+
+	in := ws.ReadFromConn(conn, desc.done)
 
 	for {
-		t, r, err := conn.NextReader()
-		if err != nil {
-			log.Println(err)
+		select {
+		case <-desc.done:
 			return
-		}
 
-		msg, err := ioutil.ReadAll(r)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
-		h.respLock.Lock()
-		log.Println("received message:", string(msg))
-		resp, should, err := h.responder(t, msg)
-		h.respLock.Unlock()
-		if err != nil {
-			log.Println("responder error:", err)
-			return
-		}
-
-		if should {
-			writer, err := conn.NextWriter(t)
+		case notice := <-desc.notice:
+			err := ws.WriteToConn(conn, ws.TextMessage, notice)
 			if err != nil {
-				log.Println(err)
+				log.Println("error reading from socket:", err)
+				return
+			}
+			log.Printf("sent message to %d: %s\n", id, string(notice))
+
+		case msg := <-in:
+			atomic.AddUint64(&h.requests, 1)
+
+			if msg.Err != nil {
+				if msg.Err != io.EOF {
+					log.Println("receive message error:", err)
+				}
+
+				return
+			}
+			if gws.Verbose {
+				log.Printf("received message from %d: %s\n", id, string(msg.Data))
+			}
+
+			h.mu.Lock()
+			resp, err := h.responder(msg.Kind, msg.Data)
+			h.mu.Unlock()
+			if err != nil {
+				log.Println("responder error:", err)
 				return
 			}
 
-			_, err = writer.Write(resp)
-			if err != nil {
-				log.Println(err)
-				return
-			}
+			if resp != nil {
+				err := ws.WriteToConn(conn, msg.Kind, resp)
+				if err != nil {
+					log.Println(err)
+					return
+				}
 
-			err = writer.Close()
-			if err != nil {
-				log.Println(err)
-				return
+				log.Printf("sent message to %d: %s\n", id, string(resp))
 			}
-
-			log.Println("sent message:", string(resp))
 		}
 	}
-}
-
-func Listen(addr string, c Config, r Responder) error {
-	log.Println("ready to listen", addr)
-	return http.ListenAndServe(addr, newWsHandler(c, r))
-}
-
-func EchoResponder(t int, msg []byte) ([]byte, bool, error) {
-	return msg, true, nil
-}
-
-func MirrorResponder(t int, msg []byte) (r []byte, ok bool, err error) {
-	if t != websocket.TextMessage {
-		return
-	}
-
-	resp := []rune(string(msg))
-	for i, l := 0, len(resp)-1; i < len(resp)/2; i, l = i+1, l-1 {
-		resp[i], resp[l] = resp[l], resp[i]
-	}
-
-	return []byte(string(resp)), true, nil
-}
-
-var green = color.New(color.FgGreen).SprintFunc()
-
-func PromptResponder(t int, msg []byte) (r []byte, ok bool, err error) {
-	fmt.Print(green("> "))
-	reader := bufio.NewReader(os.Stdin)
-	resp, _ := reader.ReadSlice('\n')
-	fmt.Printf("\033[F")
-
-	return resp[:len(resp)-1], true, nil
 }
