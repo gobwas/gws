@@ -1,10 +1,10 @@
 package server
 
 import (
+	"github.com/chzyer/readline"
 	"github.com/gobwas/gws/cli/color"
 	"github.com/gobwas/gws/cli/input"
 	"github.com/gobwas/gws/ws"
-	"gopkg.in/readline.v1"
 )
 
 func DevNullResponder(t ws.MsgType, msg []byte) ([]byte, error) {

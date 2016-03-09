@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/chzyer/readline"
 	"github.com/gobwas/glob"
 	"github.com/gobwas/gws/cli/color"
 	"github.com/gobwas/gws/cli/input"
@@ -11,7 +12,6 @@ import (
 	"github.com/gobwas/gws/util/headers"
 	"github.com/gobwas/gws/ws"
 	"github.com/gorilla/websocket"
-	"gopkg.in/readline.v1"
 	"io"
 	"log"
 	"net/http"
@@ -142,7 +142,7 @@ func (h *wsHandler) Init() {
 			{
 				var connId uint64
 				if h.connsCount > 1 {
-					var items []*readline.PrefixCompleter
+					var items []readline.PrefixCompleterInterface
 					for id := range h.conns {
 						items = append(items, readline.PcItem(string(id)))
 					}

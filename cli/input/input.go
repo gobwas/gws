@@ -2,9 +2,9 @@ package input
 
 import (
 	"bufio"
+	"github.com/chzyer/readline"
 	"github.com/gobwas/gws/cli"
 	"github.com/gobwas/gws/common"
-	"gopkg.in/readline.v1"
 	"os"
 )
 
