@@ -24,7 +24,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s %s|%s [options]\n", os.Args[0], modeClient, modeServer)
 		fmt.Fprintf(os.Stderr, "options:\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "%#v", os.Args)
 	}
 	if len(os.Args) < 2 {
 		flag.Usage()
