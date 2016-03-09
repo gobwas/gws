@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/gobwas/gws/cli/color"
 	"github.com/gobwas/gws/client"
-	"github.com/gobwas/gws/cmd"
+	"github.com/gobwas/gws/common"
 	"github.com/gobwas/gws/server"
 	"os"
 	"strings"
@@ -42,9 +42,9 @@ func main() {
 		err = fmt.Errorf("mode is required to be a one of `%s`; but `%s` given", color.Cyan(strings.Join(modes, "`, `")), color.Yellow(flag.Arg(0)))
 	}
 
-	if err != nil && err != cmd.ErrExitZero {
+	if err != nil && err != common.ErrExitZero {
 		fmt.Fprintf(os.Stderr, fmt.Sprintf("%s %s\n\n", color.Red("error:"), err))
-		if _, ok := err.(cmd.UsageError); ok {
+		if _, ok := err.(common.UsageError); ok {
 			flag.Usage()
 		}
 		os.Exit(1)

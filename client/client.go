@@ -6,7 +6,7 @@ import (
 	"github.com/gobwas/gws/cli"
 	"github.com/gobwas/gws/cli/color"
 	cliInput "github.com/gobwas/gws/cli/input"
-	"github.com/gobwas/gws/cmd"
+	"github.com/gobwas/gws/common"
 	luaClient "github.com/gobwas/gws/lua/client"
 	luaServer "github.com/gobwas/gws/lua/server"
 	"github.com/gobwas/gws/util"
@@ -46,9 +46,9 @@ type config struct {
 func Go() error {
 	u := *uri
 
-	h, err := headers.Parse(cmd.Headers)
+	h, err := headers.Parse(common.Headers)
 	if err != nil {
-		return cmd.UsageError{err}
+		return common.UsageError{err}
 	}
 
 	// prevent false error on parsing url
@@ -229,7 +229,7 @@ func GoIO(c config) error {
 func getConn(uri *url.URL, h http.Header) (*websocket.Conn, error) {
 	dialer := &websocket.Dialer{}
 	conn, resp, err := dialer.Dial(uri.String(), h)
-	if cmd.Verbose {
+	if common.Verbose {
 		req, res, _ := util.DumpRequestResponse(resp)
 		cli.Printf(cli.PrefixRaw, "%s", color.Green(string(req)))
 		cli.Printf(cli.PrefixRaw, "%s", color.Cyan(string(res)))
