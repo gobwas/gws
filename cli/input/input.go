@@ -3,7 +3,7 @@ package input
 import (
 	"bufio"
 	"github.com/gobwas/gws/cli"
-	"github.com/gobwas/gws/gws"
+	"github.com/gobwas/gws/cmd"
 	"gopkg.in/readline.v1"
 	"os"
 )
@@ -52,7 +52,7 @@ func ReadFromStdReadline(done <-chan struct{}) (<-chan Message, error) {
 			line, err := rl.Readline()
 			if err != nil {
 				if err == readline.ErrInterrupt {
-					msg = Message{Err: gws.ErrExitZero}
+					msg = Message{Err: cmd.ErrExitZero}
 				} else {
 					msg = Message{Err: err}
 				}

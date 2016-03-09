@@ -7,7 +7,7 @@ import (
 	"github.com/gobwas/glob"
 	"github.com/gobwas/gws/cli/color"
 	"github.com/gobwas/gws/cli/input"
-	"github.com/gobwas/gws/gws"
+	"github.com/gobwas/gws/cmd"
 	"github.com/gobwas/gws/util/headers"
 	"github.com/gobwas/gws/ws"
 	"github.com/gorilla/websocket"
@@ -44,14 +44,14 @@ const (
 )
 
 func Go() error {
-	h, err := headers.Parse(gws.Headers)
+	h, err := headers.Parse(cmd.Headers)
 	if err != nil {
-		return gws.UsageError{err}
+		return cmd.UsageError{err}
 	}
 
 	hb, err := time.ParseDuration(*heartbit)
 	if err != nil {
-		return gws.UsageError{err}
+		return cmd.UsageError{err}
 	}
 
 	var r Responder
@@ -197,7 +197,7 @@ func (h *wsHandler) Init() {
 }
 
 func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if gws.Verbose {
+	if cmd.Verbose {
 		req, err := httputil.DumpRequest(r, false)
 		if err != nil {
 			log.Println(err)
@@ -230,13 +230,13 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.connsCount--
 		h.mu.Unlock()
 
-		if gws.Verbose {
+		if cmd.Verbose {
 			log.Printf("connection #%d closed\n", id)
 		}
 	}()
 	h.mu.Unlock()
 
-	if gws.Verbose {
+	if cmd.Verbose {
 		log.Printf("establised connection #%d from %q\n", id, r.RemoteAddr)
 	}
 
@@ -265,7 +265,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 				return
 			}
-			if gws.Verbose {
+			if cmd.Verbose {
 				log.Printf("received message from %d: %s\n", id, string(msg.Data))
 			}
 
