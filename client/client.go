@@ -15,9 +15,9 @@ import (
 	"github.com/gobwas/gws/ws"
 	"github.com/gorilla/websocket"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
-	"stash.mail.ru/scm/ego/easygo.git/log"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +28,7 @@ var (
 	limit      = flag.Int("client.try", 1, "try to reconnect x times")
 	scriptFile = flag.String("client.script", "", "use lua script to perform action")
 	threads    = flag.Int("client.threads", 1, "how many threads (clients) start to initialize with script")
+	timeout    = flag.String("client.script.timeout", "0", "client script run timeout")
 )
 
 const headerOrigin = "Origin"
@@ -35,6 +36,7 @@ const headerOrigin = "Origin"
 type config struct {
 	headers http.Header
 	uri     *url.URL
+	timeout time.Duration
 }
 
 func parseURL(rawURL string) (*url.URL, error) {
@@ -87,9 +89,16 @@ func getConfig() (c config, err error) {
 		return
 	}
 
+	t, err := time.ParseDuration(*timeout)
+	if err != nil {
+		err = common.UsageError{err}
+		return
+	}
+
 	c = config{
 		uri:     uri,
 		headers: fillOriginHeader(headers, uri),
+		timeout: t,
 	}
 
 	return
@@ -169,11 +178,26 @@ func getThreadConn(c config) (*threadConn, error) {
 }
 
 func GoLua(scriptPath string, c config) error {
+	timeMod := modTime.New()
+	statMod := modStat.New()
+
+	luaScript, err := script.New(scriptPath, statMod, timeMod)
+	if err != nil {
+		log.Printf("create global lua script error: %s\n", err)
+		return err
+	}
+	if err := luaScript.CallMain(); err != nil {
+		log.Println(err)
+		return err
+	}
+
 	wg := sync.WaitGroup{}
 	wg.Add(*threads)
 	for i := 0; i < *threads; i++ {
-		go func() {
-			luaScript, err := script.New(scriptPath, modStat.New(), modTime.New())
+		go func(i int) {
+			start := time.Now()
+
+			luaScript, err := script.New(scriptPath, statMod, timeMod)
 			if err != nil {
 				log.Printf("create #%d lua script error: %s\n", i, err)
 				wg.Done()
@@ -184,37 +208,37 @@ func GoLua(scriptPath string, c config) error {
 				wg.Done()
 			}()
 
-			if i == 0 {
-				luaScript.CallMain()
-			}
-
 			thread := NewThread()
 			luaThread := ExportThread(thread, luaScript.L)
 
 			// call setup on new thread
-			if err := luaScript.CallSetup(luaThread); err != nil {
-				log.Printf("setup #%d error: %s\n", i, err)
+			if err := luaScript.CallSetup(luaThread, i); err != nil {
+				log.Println(err)
 				return
 			}
 
 			for thread.NextTick() {
+				if c.timeout != 0 && time.Since(start) > c.timeout {
+					break
+				}
+
 				if !thread.HasConn() {
 					reconnect, err := luaScript.CallReconnect(luaThread)
 					if err != nil {
-						log.Printf("reconnect #%d error: %s\n", i, err)
+						log.Println(err)
 						return
 					}
 
 					if !reconnect {
 						if err := luaScript.CallTeardown(luaThread); err != nil {
-							log.Printf("teardown #%d error: %s\n", i, err)
+							log.Println(err)
 						}
 						return
 					}
 
 					tc, err := getThreadConn(c)
 					if err != nil {
-						log.Println("thread connect error:", err)
+						log.Println(err)
 						return
 					}
 					thread.SetConn(tc)
@@ -224,18 +248,25 @@ func GoLua(scriptPath string, c config) error {
 
 				if thread.conn.(*threadConn).Error() != nil {
 					thread.conn.Close()
+					thread.conn = nil
 					continue
 				}
 
 				if err := luaScript.CallTick(luaThread); err != nil {
-					log.Printf("tick #%d error: %s\n", i, err)
+					log.Println(err)
 					return
 				}
 			}
-		}()
+		}(i)
 	}
 
 	wg.Wait()
+
+	if err := luaScript.CallDone(); err != nil {
+		log.Println(err)
+		return err
+	}
+
 	return nil
 }
 

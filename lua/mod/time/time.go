@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-const moduleName = "gws.time"
-
 const (
 	durationMicroseconds = "us"
 	durationMilliseconds = "ms"
@@ -24,7 +22,7 @@ func New() *Mod {
 func (m *Mod) Exports() lua.LGFunction {
 	return func(L *lua.LState) int {
 		mod := L.NewTable()
-		L.SetField(mod, "name", lua.LString(moduleName))
+		L.SetField(mod, "name", lua.LString(m.Name()))
 		L.SetField(mod, "microseconds", lua.LString(durationMicroseconds))
 		L.SetField(mod, "milliseconds", lua.LString(durationMilliseconds))
 		L.SetField(mod, "seconds", lua.LString(durationSeconds))
@@ -40,6 +38,7 @@ func (m *Mod) Exports() lua.LGFunction {
 }
 
 func (m *Mod) Name() string {
+	const moduleName = "gws.time"
 	return moduleName
 }
 

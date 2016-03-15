@@ -284,7 +284,9 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				log.Printf("sent message to %d: %s\n", id, string(resp))
+				if common.Verbose {
+					log.Printf("sent message to %d: %s\n", id, string(resp))
+				}
 			}
 		}
 	}

@@ -5,24 +5,24 @@ import (
 	"time"
 )
 
-const moduleName = "gws.stat"
-
 type Mod struct {
-	statistics *stat
+	statistics *statistics
 }
 
 func New() *Mod {
-	return &Mod{&stat{}}
+	return &Mod{newStatistics()}
 }
 
 func (m *Mod) Exports() lua.LGFunction {
 	return func(L *lua.LState) int {
 		mod := L.NewTable()
-		L.SetField(mod, "name", lua.LString(moduleName))
+		L.SetField(mod, "name", lua.LString(m.Name()))
 		mod.RawSetString("abs", L.NewClosure(registerAbs(m.statistics)))
 		mod.RawSetString("avg", L.NewClosure(registerAvg(m.statistics)))
 		mod.RawSetString("per", L.NewClosure(registerPer(m.statistics)))
 		mod.RawSetString("add", L.NewClosure(increment(m.statistics)))
+		mod.RawSetString("flush", L.NewClosure(flush(m.statistics)))
+		mod.RawSetString("pretty", L.NewClosure(pretty(m.statistics)))
 
 		L.Push(mod)
 		return 1
@@ -30,10 +30,29 @@ func (m *Mod) Exports() lua.LGFunction {
 }
 
 func (m *Mod) Name() string {
+	const moduleName = "gws.stat"
 	return moduleName
 }
 
-func increment(s *stat) lua.LGFunction {
+func pretty(s *statistics) lua.LGFunction {
+	return func(L *lua.LState) int {
+		L.Push(lua.LString(s.pretty()))
+		return 1
+	}
+}
+
+func flush(s *statistics) lua.LGFunction {
+	return func(L *lua.LState) int {
+		results := L.NewTable()
+		for key, c := range s.counters {
+			results.RawSetString(key, lua.LNumber(c.flush()))
+		}
+		L.Push(results)
+		return 1
+	}
+}
+
+func increment(s *statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
 		name := L.ToString(1)
 		c, err := s.get(name)
@@ -49,7 +68,7 @@ func increment(s *stat) lua.LGFunction {
 	}
 }
 
-func registerAbs(s *stat) lua.LGFunction {
+func registerAbs(s *statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
 		name := L.ToString(1)
 		err := s.add(name, &abs{})
@@ -61,7 +80,7 @@ func registerAbs(s *stat) lua.LGFunction {
 		return 0
 	}
 }
-func registerAvg(s *stat) lua.LGFunction {
+func registerAvg(s *statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
 		name := L.ToString(1)
 		err := s.add(name, &avg{})
@@ -73,7 +92,7 @@ func registerAvg(s *stat) lua.LGFunction {
 		return 0
 	}
 }
-func registerPer(s *stat) lua.LGFunction {
+func registerPer(s *statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
 		dur := L.ToString(2)
 		duration, err := time.ParseDuration(dur)
@@ -83,7 +102,10 @@ func registerPer(s *stat) lua.LGFunction {
 		}
 
 		name := L.ToString(1)
-		err = s.add(name, &per{interval: float64(duration)})
+		err = s.add(name, &per{
+			interval: duration,
+			stamp:    time.Now(),
+		})
 		if err != nil {
 			L.Push(lua.LString(err.Error()))
 			return 1

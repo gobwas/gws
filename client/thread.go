@@ -9,13 +9,13 @@ import (
 func ExportThread(t *Thread, L *lua.LState) *lua.LTable {
 	thread := L.NewTable()
 	thread.RawSetString("set", L.NewClosure(func(L *lua.LState) int {
-		key := L.ToString(1)
-		value := L.Get(2)
+		key := L.ToString(2)
+		value := L.Get(3)
 		t.Set(key, value)
 		return 0
 	}))
 	thread.RawSetString("get", L.NewClosure(func(L *lua.LState) int {
-		key := L.ToString(1)
+		key := L.ToString(2)
 		value := t.Get(key)
 		switch v := value.(type) {
 		case lua.LValue:
@@ -30,7 +30,7 @@ func ExportThread(t *Thread, L *lua.LState) *lua.LTable {
 		return 1
 	}))
 	thread.RawSetString("send", L.NewClosure(func(L *lua.LState) int {
-		msg := L.ToString(1)
+		msg := L.ToString(2)
 		err := t.Send([]byte(msg))
 		if err != nil {
 			L.Push(lua.LString(err.Error()))
@@ -49,6 +49,17 @@ func ExportThread(t *Thread, L *lua.LState) *lua.LTable {
 			L.Push(lua.LNil)
 		}
 		return 2
+	}))
+	thread.RawSetString("sleep", L.NewClosure(func(L *lua.LState) int {
+		dur := L.ToString(2)
+		sleep, err := time.ParseDuration(dur)
+		if err != nil {
+			L.Push(lua.LString(err.Error()))
+			return 1
+		}
+		t.sleep.Reset(sleep)
+		t.wake = make(chan struct{})
+		return 0
 	}))
 	thread.RawSetString("close", L.NewClosure(func(L *lua.LState) int {
 		err := t.Close()
@@ -78,13 +89,24 @@ type Thread struct {
 	sleep *time.Timer
 	conn  Conn
 	dead  chan struct{}
+	wake  chan struct{}
 }
 
 func NewThread() *Thread {
-	return &Thread{
+	timer := time.NewTimer(0)
+	timer.Stop()
+
+	t := &Thread{
 		data:  make(map[string]interface{}),
-		sleep: time.NewTimer(0),
+		dead:  make(chan struct{}),
+		wake:  make(chan struct{}),
+		sleep: timer,
 	}
+
+	// already sleeped
+	close(t.wake)
+
+	return t
 }
 
 func (t *Thread) SetConn(c Conn) {
@@ -96,20 +118,12 @@ func (t *Thread) HasConn() bool {
 }
 
 func (t *Thread) Set(key string, value interface{}) {
-	t.mu.Lock()
-	{
-		t.data[key] = value
-	}
-	t.mu.Unlock()
+	t.data[key] = value
 	return
 }
 
 func (t *Thread) Get(key string) (result interface{}) {
-	t.mu.Lock()
-	{
-		result = t.data[key]
-	}
-	t.mu.Unlock()
+	result = t.data[key]
 	return
 }
 
@@ -134,6 +148,9 @@ func (t *Thread) NextTick() bool {
 	case <-t.dead:
 		return false
 	case <-t.sleep.C:
+		close(t.wake)
+		return true
+	case <-t.wake:
 		return true
 	}
 }

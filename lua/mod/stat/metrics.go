@@ -1,13 +1,17 @@
 package stat
 
 import (
+	"bytes"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 )
 
 type counter interface {
 	add(v float64)
 	flush() float64
+	name() string
 }
 
 type avg struct {
@@ -41,33 +45,42 @@ func (a *avg) flush() (result float64) {
 	return
 }
 
+func (a *avg) name() string {
+	return "avg"
+}
+
 type abs struct {
 	mu    sync.Mutex
 	value float64
 }
 
-func (c *abs) add(v float64) {
-	c.mu.Lock()
+func (a *abs) add(v float64) {
+	a.mu.Lock()
 	{
-		c.value += v
+		a.value += v
 	}
-	c.mu.Unlock()
+	a.mu.Unlock()
 }
 
-func (c *abs) flush() (result float64) {
-	c.mu.Lock()
+func (a *abs) flush() (result float64) {
+	a.mu.Lock()
 	{
-		result = c.value
-		c.value = 0
+		result = a.value
+		a.value = 0
 	}
-	c.mu.Unlock()
+	a.mu.Unlock()
 	return
+}
+
+func (a *abs) name() string {
+	return "abs"
 }
 
 type per struct {
 	mu       sync.Mutex
 	value    float64
-	interval float64
+	interval time.Duration
+	stamp    time.Time
 }
 
 func (p *per) add(v float64) {
@@ -78,27 +91,100 @@ func (p *per) add(v float64) {
 	p.mu.Unlock()
 }
 
-func (c *per) flush() (result float64) {
-	c.mu.Lock()
+func (p *per) flush() (result float64) {
+	p.mu.Lock()
 	{
-		if c.interval == 0 {
+		k := float64(time.Since(p.stamp)) / float64(p.interval)
+		if k == 0 {
 			result = 0
 		} else {
-			result = c.value / c.interval
+			result = p.value / k
 		}
 
-		c.value = 0
+		p.value = 0
 	}
-	c.mu.Unlock()
+	p.mu.Unlock()
 	return
 }
 
-type stat struct {
+func (p *per) name() string {
+	return "per " + p.interval.String()
+}
+
+type statistics struct {
 	mu       sync.Mutex
 	counters map[string]counter
 }
 
-func (s *stat) add(name string, c counter) (err error) {
+func newStatistics() *statistics {
+	return &statistics{
+		counters: make(map[string]counter),
+	}
+}
+
+const (
+	titleKey   = "counter"
+	titleValue = "value"
+	titleKind  = "kind"
+	tab        = "  "
+)
+
+func (s *statistics) pretty() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	buf := &bytes.Buffer{}
+
+	maxKeyLen := len(titleKey)
+	maxValueLen := len(titleValue)
+	maxKindLen := len(titleKind)
+
+	var pairs [][]string
+	for id, counter := range s.counters {
+		key := fmt.Sprintf("%s", id)
+		value := fmt.Sprintf("%.3f", counter.flush())
+		kind := fmt.Sprintf("%s", counter.name())
+
+		pairs = append(pairs, []string{key, value, kind})
+
+		if l := len(key); l > maxKeyLen {
+			maxKeyLen = l
+		}
+		if l := len(value); l > maxValueLen {
+			maxValueLen = l
+		}
+		if l := len(kind); l > maxKindLen {
+			maxKindLen = l
+		}
+	}
+
+	fmt.Fprint(buf, strings.Join(
+		[]string{
+			fmt.Sprintf("%-*s", maxKeyLen, titleKey),
+			fmt.Sprintf("%-*s", maxValueLen, titleValue),
+			fmt.Sprintf("%-*s", maxKindLen, titleKind),
+		},
+		tab,
+	), "\n")
+
+	buf.WriteString(strings.Repeat("-", maxKeyLen+maxValueLen+maxKindLen+len(tab)*2) + "\n")
+
+	for _, p := range pairs {
+		fmt.Fprint(buf, strings.Join(
+			[]string{
+				fmt.Sprintf("%-*s", maxKeyLen, p[0]),
+				fmt.Sprintf("%-*s", maxValueLen, p[1]),
+				fmt.Sprintf("%-*s", maxKindLen, p[2]),
+			},
+			tab,
+		), "\n")
+	}
+	buf.WriteByte('\n')
+
+	return buf.String()
+}
+
+func (s *statistics) add(name string, c counter) (err error) {
 	s.mu.Lock()
 	{
 		if _, ok := s.counters[name]; ok {
@@ -110,7 +196,7 @@ func (s *stat) add(name string, c counter) (err error) {
 	s.mu.Unlock()
 	return
 }
-func (s *stat) get(name string) (c counter, err error) {
+func (s *statistics) get(name string) (c counter, err error) {
 	s.mu.Lock()
 	{
 		var ok bool
