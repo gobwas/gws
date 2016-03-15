@@ -7,13 +7,13 @@ import (
 	"github.com/gobwas/gws/cli/color"
 	cliInput "github.com/gobwas/gws/cli/input"
 	"github.com/gobwas/gws/common"
-	luaClient "github.com/gobwas/gws/lua/client"
-	luaServer "github.com/gobwas/gws/lua/server"
+	modStat "github.com/gobwas/gws/lua/mod/stat"
+	modTime "github.com/gobwas/gws/lua/mod/time"
+	"github.com/gobwas/gws/lua/script"
 	"github.com/gobwas/gws/util"
-	"github.com/gobwas/gws/util/headers"
+	headersUtil "github.com/gobwas/gws/util/headers"
 	"github.com/gobwas/gws/ws"
 	"github.com/gorilla/websocket"
-	"github.com/yuin/gopher-lua"
 	"io"
 	"net/http"
 	"net/url"
@@ -24,48 +24,39 @@ import (
 )
 
 var (
-	uri     = flag.String("client.url", ":3000", "websocket url to connect")
-	limit   = flag.Int("client.try", 1, "try to reconnect x times")
-	script  = flag.String("client.script", "", "use lua script to perform action")
-	threads = flag.Int("client.threads", 1, "how many threads (clients) start to initialize with script")
+	uri        = flag.String("client.url", ":3000", "websocket url to connect")
+	limit      = flag.Int("client.try", 1, "try to reconnect x times")
+	scriptFile = flag.String("client.script", "", "use lua script to perform action")
+	threads    = flag.Int("client.threads", 1, "how many threads (clients) start to initialize with script")
 )
 
 const headerOrigin = "Origin"
-
-//func getConn(uri url.URL, headers http.Header) (resp http.Response, conn websocket.Conn, err error) {
-//	dialer := &websocket.Dialer{}
-//	conn, resp, err = dialer.Dial(uri.String(), headers)
-//	return
-//}
 
 type config struct {
 	headers http.Header
 	uri     *url.URL
 }
 
-func Go() error {
-	u := *uri
-
-	h, err := headers.Parse(common.Headers)
-	if err != nil {
-		return common.UsageError{err}
-	}
-
+func parseURL(rawURL string) (*url.URL, error) {
 	// prevent false error on parsing url
-	if strings.Index(u, "://") == -1 {
-		u = fmt.Sprintf("ws://%s", u)
+	if strings.Index(rawURL, "://") == -1 {
+		rawURL = fmt.Sprintf("ws://%s", rawURL)
 	}
-	uri, err := url.Parse(u)
+	uri, err := url.Parse(rawURL)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if uri.Scheme == "" {
 		uri.Scheme = "ws"
 	}
 
+	return uri, nil
+}
+
+func fillOriginHeader(headers http.Header, uri *url.URL) http.Header {
 	// by default, set the same origin
 	// to avoid same origin policy check on connections
-	if orig := h.Get(headerOrigin); orig == "" {
+	if headers.Get(headerOrigin) == "" {
 		var s string
 		switch uri.Scheme {
 		case "wss":
@@ -77,95 +68,170 @@ func Go() error {
 			Scheme: s,
 			Host:   uri.Host,
 		}
-		h.Set(headerOrigin, orig.String())
+		headers.Set(headerOrigin, orig.String())
 	}
 
-	c := config{
-		uri:     uri,
-		headers: h,
-	}
-
-	if *script != "" {
-		return GoLua(c)
-	}
-
-	return GoIO(c)
+	return headers
 }
 
-func GoLua(c config) error {
+func getConfig() (c config, err error) {
+	headers, err := headersUtil.Parse(common.Headers)
+	if err != nil {
+		err = common.UsageError{err}
+		return
+	}
+
+	uri, err := parseURL(*uri)
+	if err != nil {
+		err = common.UsageError{err}
+		return
+	}
+
+	c = config{
+		uri:     uri,
+		headers: fillOriginHeader(headers, uri),
+	}
+
+	return
+}
+
+func Go() error {
+	c, err := getConfig()
+	if err != nil {
+		return err
+	}
+
+	if *scriptFile != "" {
+		return GoLua(*scriptFile, c)
+	} else {
+		return GoIO(c)
+	}
+}
+
+func safeClose(ch chan struct{}) {
+	select {
+	case <-ch:
+	// done has already closed
+	default:
+		close(ch)
+	}
+}
+
+type threadConn struct {
+	conn *websocket.Conn
+	kind ws.Kind
+	err  error
+}
+
+func (w *threadConn) Send(b []byte) error {
+	err := ws.WriteToConn(w.conn, w.kind, b)
+	if err != nil {
+		w.err = err
+		return err
+	}
+	return nil
+}
+func (w *threadConn) Receive() ([]byte, error) {
+	for {
+		msg, err := ws.ReadFromConn(w.conn)
+		if err != nil {
+			w.err = err
+			return nil, err
+		}
+		if msg.Kind == w.kind {
+			return msg.Data, nil
+		}
+	}
+	panic("unexpected loop leave")
+}
+func (w *threadConn) Close() error {
+	return w.conn.Close()
+}
+func (w *threadConn) Error() error {
+	return w.err
+}
+
+func getConnRaw(c config) (conn *websocket.Conn, err error) {
+	dialer := &websocket.Dialer{}
+	conn, _, err = dialer.Dial(c.uri.String(), c.headers)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+func getThreadConn(c config) (*threadConn, error) {
+	conn, err := getConnRaw(c)
+	if err != nil {
+		return nil, err
+	}
+
+	return &threadConn{conn, ws.TextMessage, nil}, nil
+}
+
+func GoLua(scriptPath string, c config) error {
 	wg := sync.WaitGroup{}
+	wg.Add(*threads)
 	for i := 0; i < *threads; i++ {
-		wg.Add(1)
-
 		go func() {
-			l := lua.NewState()
-			l.PreloadModule(luaServer.ModuleName, luaServer.Exports)
-			l.PreloadModule(luaClient.ModuleName, luaClient.Exports)
-			if err := l.DoFile(*script); err != nil {
-				log.Printf("load #%d lua script error: %s\n", i, err)
-				l.Close()
+			luaScript, err := script.New(scriptPath, modStat.New(), modTime.New())
+			if err != nil {
+				log.Printf("create #%d lua script error: %s\n", i, err)
 				wg.Done()
 				return
 			}
-
-			// create connection
-			dialer := &websocket.Dialer{}
-			conn, _, err := dialer.Dial(c.uri.String(), c.headers)
-			if err != nil {
-				log.Printf("connection for #%d lua script error: %s\n", i, err)
-				l.Close()
+			defer func() {
+				luaScript.Close()
 				wg.Done()
-				return
+			}()
+
+			if i == 0 {
+				luaScript.CallMain()
 			}
 
-			done := make(chan struct{})
-			input := ws.ReadFromConn(conn, done)
+			thread := NewThread()
+			luaThread := ExportThread(thread, luaScript.L)
 
-			thread := l.NewTable()
-			l.SetFuncs(thread, map[string]lua.LGFunction{
-				"send": func(L *lua.LState) int {
-					msg := L.ToString(1)
-					err := ws.WriteToConn(conn, ws.TextMessage, []byte(msg))
-					if err != nil {
-						L.Push(lua.LString(err.Error()))
-					} else {
-						L.Push(lua.LString(""))
-					}
-					return 1
-				},
-				"receive": func(L *lua.LState) int {
-					msg := <-input
-					if msg.Err != nil {
-						L.Push(lua.LString(""))
-						L.Push(lua.LString(msg.Err.Error()))
-					} else {
-						L.Push(lua.LString(string(msg.Data)))
-						L.Push(lua.LString(""))
-					}
-					return 2
-				},
-				"die": func(L *lua.LState) int {
-					close(done)
-					return 0
-				},
-				"set": func(L *lua.LState) int {
-					//					log.Println("calling set with:", L.ToInt(3))
-					return 0
-				},
-			})
-
-			err = l.CallByParam(lua.P{
-				Fn:      l.GetGlobal("setup"),
-				NRet:    0,
-				Protect: true,
-			}, thread)
-			if err != nil {
+			// call setup on new thread
+			if err := luaScript.CallSetup(luaThread); err != nil {
 				log.Printf("setup #%d error: %s\n", i, err)
+				return
 			}
 
-			wg.Done()
-			l.Close()
-			conn.Close()
+			for thread.NextTick() {
+				if !thread.HasConn() {
+					reconnect, err := luaScript.CallReconnect(luaThread)
+					if err != nil {
+						log.Printf("reconnect #%d error: %s\n", i, err)
+						return
+					}
+
+					if !reconnect {
+						if err := luaScript.CallTeardown(luaThread); err != nil {
+							log.Printf("teardown #%d error: %s\n", i, err)
+						}
+						return
+					}
+
+					tc, err := getThreadConn(c)
+					if err != nil {
+						log.Println("thread connect error:", err)
+						return
+					}
+					thread.SetConn(tc)
+
+					continue
+				}
+
+				if thread.conn.(*threadConn).Error() != nil {
+					thread.conn.Close()
+					continue
+				}
+
+				if err := luaScript.CallTick(luaThread); err != nil {
+					log.Printf("tick #%d error: %s\n", i, err)
+					return
+				}
+			}
 		}()
 	}
 
@@ -194,7 +260,7 @@ func GoIO(c config) error {
 	if err != nil {
 		return err
 	}
-	input := ws.ReadFromConn(conn, done)
+	input := ws.ReadAsyncFromConn(done, conn)
 
 	for {
 		select {

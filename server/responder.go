@@ -7,15 +7,15 @@ import (
 	"github.com/gobwas/gws/ws"
 )
 
-func DevNullResponder(t ws.MsgType, msg []byte) ([]byte, error) {
+func DevNullResponder(t ws.Kind, msg []byte) ([]byte, error) {
 	return nil, nil
 }
 
-func EchoResponder(t ws.MsgType, msg []byte) ([]byte, error) {
+func EchoResponder(t ws.Kind, msg []byte) ([]byte, error) {
 	return msg, nil
 }
 
-func MirrorResponder(t ws.MsgType, msg []byte) (r []byte, err error) {
+func MirrorResponder(t ws.Kind, msg []byte) (r []byte, err error) {
 	if t != ws.TextMessage {
 		return
 	}
@@ -28,7 +28,7 @@ func MirrorResponder(t ws.MsgType, msg []byte) (r []byte, err error) {
 	return []byte(string(resp)), nil
 }
 
-func PromptResponder(t ws.MsgType, msg []byte) (r []byte, err error) {
+func PromptResponder(t ws.Kind, msg []byte) (r []byte, err error) {
 	r, err = input.Readline(&readline.Config{
 		Prompt:      color.Green("> "),
 		HistoryFile: "/tmp/gws_readline_server.tmp",

@@ -108,7 +108,7 @@ type connDescriptor struct {
 
 const headerOrigin = "Origin"
 
-type Responder func(ws.MsgType, []byte) ([]byte, error)
+type Responder func(ws.Kind, []byte) ([]byte, error)
 
 func newWsHandler(c Config, r Responder) *wsHandler {
 	u := websocket.Upgrader{}
@@ -240,7 +240,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("establised connection #%d from %q\n", id, r.RemoteAddr)
 	}
 
-	in := ws.ReadFromConn(conn, desc.done)
+	in := ws.ReadAsyncFromConn(desc.done, conn)
 
 	for {
 		select {

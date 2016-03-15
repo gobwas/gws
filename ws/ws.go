@@ -6,7 +6,7 @@ import (
 	"io/ioutil"
 )
 
-type MsgType int
+type Kind int
 
 const (
 	TextMessage   = 1
@@ -16,7 +16,7 @@ const (
 	PongMessage   = 10
 )
 
-func (m MsgType) String() string {
+func (m Kind) String() string {
 	switch m {
 	case TextMessage:
 		return "TextMessage"
@@ -33,29 +33,18 @@ func (m MsgType) String() string {
 	}
 }
 
-func writeMessageNonBlocking(ch chan<- Message, m Message) {
-	select {
-	case ch <- m:
-	//
-	default:
-		//
-	}
-}
-
 type MessageRaw struct {
-	Kind MsgType
+	Kind Kind
 	Data []byte
 }
 
 type Message struct {
-	Kind MsgType
+	Kind Kind
 	Data []byte
 	Err  error
 }
 
-func WriteToConnChan(conn *websocket.Conn, done <-chan struct{}, output <-chan MessageRaw) <-chan error {
-	ch := make(chan error)
-
+func WriteToConnChan(conn *websocket.Conn, done <-chan struct{}, output <-chan MessageRaw, errors chan<- error) {
 	go func() {
 		select {
 		case <-done:
@@ -67,18 +56,15 @@ func WriteToConnChan(conn *websocket.Conn, done <-chan struct{}, output <-chan M
 				select {
 				case <-done:
 					return
-				default:
-					ch <- err
+				case errors <- err:
+					return
 				}
-				return
 			}
 		}
 	}()
-
-	return ch
 }
 
-func WriteToConn(conn *websocket.Conn, t MsgType, b []byte) error {
+func WriteToConn(conn *websocket.Conn, t Kind, b []byte) error {
 	writer, err := conn.NextWriter(int(t))
 	if err != nil {
 		return err
@@ -97,9 +83,22 @@ func WriteToConn(conn *websocket.Conn, t MsgType, b []byte) error {
 	return nil
 }
 
-func ReadFromConn(conn *websocket.Conn, done <-chan struct{}) <-chan Message {
-	ch := make(chan Message)
+func ReadFromConn(conn *websocket.Conn) (msg MessageRaw, err error) {
+	t, r, err := conn.NextReader()
+	if err != nil {
+		return
+	}
 
+	b, err := ioutil.ReadAll(r)
+	if err != nil {
+		return
+	}
+
+	msg = MessageRaw{Data: b, Kind: Kind(t)}
+	return
+}
+
+func ReadFromConnInto(done <-chan struct{}, conn *websocket.Conn, ch chan<- Message) {
 	go func() {
 		for {
 			var msg Message
@@ -111,21 +110,24 @@ func ReadFromConn(conn *websocket.Conn, done <-chan struct{}) <-chan Message {
 				if err != nil {
 					msg = Message{Err: err}
 				} else {
-					msg = Message{Data: b, Kind: MsgType(t)}
+					msg = Message{Data: b, Kind: Kind(t)}
 				}
 			}
 
 			select {
 			case <-done:
 				return
-			default:
-				ch <- msg
+			case ch <- msg:
 				if msg.Err != nil {
 					return
 				}
 			}
 		}
 	}()
+}
 
+func ReadAsyncFromConn(done <-chan struct{}, conn *websocket.Conn) <-chan Message {
+	ch := make(chan Message)
+	ReadFromConnInto(done, conn, ch)
 	return ch
 }
