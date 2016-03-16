@@ -5,10 +5,12 @@ import (
 	"time"
 )
 
+type durationKind int
+
 const (
-	durationMicroseconds = "us"
-	durationMilliseconds = "ms"
-	durationSeconds      = "s"
+	durationMicroseconds durationKind = iota
+	durationMilliseconds
+	durationSeconds
 )
 
 type Mod struct {
@@ -22,12 +24,11 @@ func New() *Mod {
 func (m *Mod) Exports() lua.LGFunction {
 	return func(L *lua.LState) int {
 		mod := L.NewTable()
-		L.SetField(mod, "name", lua.LString(m.Name()))
-		L.SetField(mod, "microseconds", lua.LString(durationMicroseconds))
-		L.SetField(mod, "milliseconds", lua.LString(durationMilliseconds))
-		L.SetField(mod, "seconds", lua.LString(durationSeconds))
+		L.SetField(mod, "us", lua.LNumber(durationMicroseconds))
+		L.SetField(mod, "ms", lua.LNumber(durationMilliseconds))
+		L.SetField(mod, "s", lua.LNumber(durationSeconds))
 		mod.RawSetString("now", L.NewClosure(func(L *lua.LState) int {
-			now := inPrecision(time.Since(m.initTime), L.ToString(1))
+			now := inPrecision(time.Since(m.initTime), durationKind(L.ToNumber(1)))
 			L.Push(lua.LNumber(now))
 			return 1
 		}))
@@ -42,7 +43,7 @@ func (m *Mod) Name() string {
 	return moduleName
 }
 
-func inPrecision(dur time.Duration, p string) float64 {
+func inPrecision(dur time.Duration, p durationKind) float64 {
 	switch p {
 	case durationMicroseconds:
 		return dur.Seconds() * 1000000

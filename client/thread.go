@@ -51,14 +51,13 @@ func ExportThread(t *Thread, L *lua.LState) *lua.LTable {
 		return 2
 	}))
 	thread.RawSetString("sleep", L.NewClosure(func(L *lua.LState) int {
-		dur := L.ToString(2)
-		sleep, err := time.ParseDuration(dur)
+		arg := L.ToString(2)
+		duration, err := time.ParseDuration(arg)
 		if err != nil {
 			L.Push(lua.LString(err.Error()))
 			return 1
 		}
-		t.sleep.Reset(sleep)
-		t.wake = make(chan struct{})
+		t.Sleep(duration)
 		return 0
 	}))
 	thread.RawSetString("close", L.NewClosure(func(L *lua.LState) int {
@@ -85,28 +84,50 @@ type Conn interface {
 
 type Thread struct {
 	mu    sync.Mutex
-	data  map[string]interface{}
-	sleep *time.Timer
 	conn  Conn
+	data  map[string]interface{}
+	sleep chan time.Duration
+	awake chan empty
 	dead  chan struct{}
-	wake  chan struct{}
 }
 
 func NewThread() *Thread {
-	timer := time.NewTimer(0)
-	timer.Stop()
-
 	t := &Thread{
 		data:  make(map[string]interface{}),
 		dead:  make(chan struct{}),
-		wake:  make(chan struct{}),
-		sleep: timer,
+		awake: make(chan empty),
+		sleep: make(chan time.Duration, 1),
 	}
 
-	// already sleeped
-	close(t.wake)
+	t.InitEventLoop()
 
 	return t
+}
+
+func (t *Thread) InitEventLoop() {
+	go func() {
+		timer := time.NewTimer(0)
+		timer.Stop()
+
+		for {
+			select {
+			// received signal that we should sleep for a while
+			case duration := <-t.sleep:
+				// flush awake chan preventing any ticks run
+				select {
+				case <-t.awake:
+				default:
+				}
+
+				timer.Reset(duration)
+				<-timer.C
+
+			// other way send signal that we could continue event loop
+			case t.awake <- empty{}:
+				// do nothing
+			}
+		}
+	}()
 }
 
 func (t *Thread) SetConn(c Conn) {
@@ -143,14 +164,17 @@ func (t *Thread) Kill() {
 	close(t.dead)
 }
 
+func (t *Thread) Sleep(duration time.Duration) {
+	t.sleep <- duration
+}
+
 func (t *Thread) NextTick() bool {
 	select {
 	case <-t.dead:
 		return false
-	case <-t.sleep.C:
-		close(t.wake)
-		return true
-	case <-t.wake:
+	case <-t.awake:
 		return true
 	}
 }
+
+type empty struct{}

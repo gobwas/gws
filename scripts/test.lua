@@ -4,22 +4,21 @@ local time = require("gws.time")
 local message = "test message"
 local sleep = "0"
 local dialLimit = 100
-local start = time.now("seconds")
+local start = time.now(time.s)
 
 function main()
-    stat.abs("duration")
-    stat.abs("dials")
-    stat.abs("errors_send")
-    stat.abs("errors_receive")
-    stat.abs("threads")
-    stat.per("messages_in", "1s")
-    stat.per("messages_out", "1s")
-    stat.avg("delay")
+    stat.new("duration",       stat.abs({measure="sec"}))
+    stat.new("dials",          stat.abs())
+    stat.new("errors_send",    stat.abs())
+    stat.new("errors_receive", stat.abs())
+    stat.new("threads",        stat.abs())
+    stat.new("messages_in",    stat.per("1s", {measure="rps"}), stat.abs())
+    stat.new("messages_out",   stat.per("1s", {measure=""}), stat.abs())
+    stat.new("delay",          stat.avg({measure="msec"}))
 end
 
 function done()
-    -- todo here not 5s
-    stat.add("duration", time.now("seconds") - start)
+    stat.add("duration", time.now(time.s) - start)
     print(stat.pretty())
 end
 
@@ -51,24 +50,28 @@ function reconnect(thread)
 end
 
 function tick(thread)
+    local tags = {
+        thread=thread:get("id")
+    }
+
     local err = thread:send(message)
     if err ~= nil then
         print("send error:", err)
-        stat.add("errors_send", 1)
+        stat.add("errors_send", 1, tags)
         thread:sleep(sleep)
         return
     else
-        stat.add("messages_out", 1)
+        stat.add("messages_out", 1, tags)
     end
 
-    local start = time.now(time.milliseconds)
+    local start = time.now(time.ms)
     local _, err = thread:receive()
     if err ~= nil then
         print("receive error:", err)
-        stat.add("errors_receive", 1)
+        stat.add("errors_receive", 1, tags)
     else
-        stat.add("delay", time.now(time.milliseconds) - start)
-        stat.add("messages_in", 1)
+        stat.add("delay", time.now(time.ms) - start, tags)
+        stat.add("messages_in", 1, tags)
     end
 
     thread:sleep(sleep)
