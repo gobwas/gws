@@ -2,16 +2,20 @@ package stat
 
 import (
 	"fmt"
+	"github.com/gobwas/gws/stat"
+	"github.com/gobwas/gws/stat/counter/abs"
+	"github.com/gobwas/gws/stat/counter/avg"
+	"github.com/gobwas/gws/stat/counter/per"
 	"github.com/yuin/gopher-lua"
 	"time"
 )
 
 type Mod struct {
-	statistics *statistics
+	statistics *stat.Statistics
 }
 
-func New() *Mod {
-	return &Mod{newStatistics()}
+func New(s *stat.Statistics) *Mod {
+	return &Mod{s}
 }
 
 func (m *Mod) Exports() lua.LGFunction {
@@ -48,7 +52,7 @@ const (
 	kindPer
 )
 
-func registerNew(s *statistics) lua.LGFunction {
+func registerNew(s *stat.Statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
 		name := L.ToString(1)
 		for i := 2; ; i++ {
@@ -68,40 +72,40 @@ func registerNew(s *statistics) lua.LGFunction {
 				})
 			}
 
-			var counter *counterSetup
+			var config stat.Config
 			kind := int(def.RawGetString(definitionFieldKind).(lua.LNumber))
 			switch kind {
 			case kindAbs:
-				abs, err := createAbs()
+				abs, err := absFactory()
 				if err != nil {
 					L.Push(lua.LString(err.Error()))
 					return 1
 				}
-				counter = &counterSetup{abs, meta}
+				config = stat.Config{abs, meta}
 
 			case kindAvg:
-				avg, err := createAvg()
+				avg, err := avgFactory()
 				if err != nil {
 					L.Push(lua.LString(err.Error()))
 					return 1
 				}
-				counter = &counterSetup{avg, meta}
+				config = stat.Config{avg, meta}
 
 			case kindPer:
 				interval := def.RawGetString(definitionFieldInterval).(lua.LString)
-				per, err := createPer(interval.String())
+				per, err := perFactory(interval.String())
 				if err != nil {
 					L.Push(lua.LString(err.Error()))
 					return 1
 				}
-				counter = &counterSetup{per, meta}
+				config = stat.Config{per, meta}
 
 			default:
 				L.Push(lua.LString(fmt.Sprintf("unknown type of counter: %v", kind)))
 				return 1
 			}
 
-			err := s.add(name, counter)
+			err := s.Setup(name, config)
 			if err != nil {
 				L.Push(lua.LString(err.Error()))
 				return 1
@@ -112,39 +116,49 @@ func registerNew(s *statistics) lua.LGFunction {
 	}
 }
 
-func registerPretty(s *statistics) lua.LGFunction {
+func registerPretty(s *stat.Statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
-		L.Push(lua.LString(s.pretty()))
+		L.Push(lua.LString(s.Pretty()))
 		return 1
 	}
 }
 
-func registerFlush(s *statistics) lua.LGFunction {
+func registerFlush(s *stat.Statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
+		var index int
 		results := L.NewTable()
-		for key, counters := range s.instances {
-			sub := L.NewTable()
-			for _, instance := range counters {
+
+		for name, metrics := range s.Metrics {
+			for _, metric := range metrics {
 				tags := L.NewTable()
-				for key, value := range instance.tags {
+				for key, value := range metric.Tags {
 					tags.RawSetString(key, lua.LString(value))
 				}
-				meta := L.NewTable()
-				for key, value := range instance.setup.meta {
-					meta.RawSetString(key, value.(lua.LValue))
+
+				for _, instance := range metric.Instances {
+					meta := L.NewTable()
+					for key, value := range instance.Meta {
+						meta.RawSetString(key, value.(lua.LValue))
+					}
+
+					sub := L.NewTable()
+					sub.RawSetString("name", lua.LString(name))
+					sub.RawSetString("kind", lua.LString(instance.Counter.Kind()))
+					sub.RawSetString("value", lua.LNumber(instance.Counter.Flush()))
+					sub.RawSetString("tags", tags)
+					sub.RawSetString("meta", meta)
+
+					results.RawSetInt(index, sub)
+					index++
 				}
-				sub.RawSetString("value", lua.LNumber(instance.counter.flush()))
-				sub.RawSetString("tags", tags)
-				sub.RawSetString("meta", meta)
 			}
-			results.RawSetString(key, sub)
 		}
 		L.Push(results)
 		return 1
 	}
 }
 
-func registerAdd(s *statistics) lua.LGFunction {
+func registerAdd(s *stat.Statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
 		name := L.ToString(1)
 		value := L.ToNumber(2)
@@ -160,7 +174,7 @@ func registerAdd(s *statistics) lua.LGFunction {
 			})
 		}
 
-		err := s.inc(name, float64(value), tagsMap)
+		err := s.Increment(name, float64(value), tagsMap)
 		if err != nil {
 			L.Push(lua.LString(err.Error()))
 			return 1
@@ -168,7 +182,7 @@ func registerAdd(s *statistics) lua.LGFunction {
 		return 0
 	}
 }
-func registerAbs(s *statistics) lua.LGFunction {
+func registerAbs(s *stat.Statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
 		def := L.NewTable()
 		def.RawSetString(definitionFieldKind, lua.LNumber(kindAbs))
@@ -179,7 +193,7 @@ func registerAbs(s *statistics) lua.LGFunction {
 		return 1
 	}
 }
-func registerAvg(s *statistics) lua.LGFunction {
+func registerAvg(s *stat.Statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
 		def := L.NewTable()
 		def.RawSetString(definitionFieldKind, lua.LNumber(kindAvg))
@@ -190,7 +204,7 @@ func registerAvg(s *statistics) lua.LGFunction {
 		return 1
 	}
 }
-func registerPer(s *statistics) lua.LGFunction {
+func registerPer(s *stat.Statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
 		def := L.NewTable()
 		def.RawSetString(definitionFieldKind, lua.LNumber(kindPer))
@@ -203,26 +217,23 @@ func registerPer(s *statistics) lua.LGFunction {
 	}
 }
 
-func createAbs() (factory, error) {
-	return func() counter {
-		return &abs{}
+func absFactory() (stat.CounterFactory, error) {
+	return func() stat.Counter {
+		return abs.New()
 	}, nil
 }
-func createAvg() (factory, error) {
-	return func() counter {
-		return &avg{}
+func avgFactory() (stat.CounterFactory, error) {
+	return func() stat.Counter {
+		return avg.New()
 	}, nil
 }
-func createPer(dur string) (factory, error) {
+func perFactory(dur string) (stat.CounterFactory, error) {
 	duration, err := time.ParseDuration(dur)
 	if err != nil {
 		return nil, err
 	}
 
-	return func() counter {
-		return &per{
-			interval: duration,
-			stamp:    time.Now(),
-		}
+	return func() stat.Counter {
+		return per.New(duration)
 	}, nil
 }
