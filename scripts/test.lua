@@ -2,24 +2,25 @@ local stat = require("gws.stat")
 local time = require("gws.time")
 
 local message = "test message"
-local sleep = "0"
+local sleep = "10ms"
 local dialLimit = 100
 local start = time.now(time.s)
 
 function main()
-    stat.new("duration",       stat.abs({measure="sec"}))
+    print("main")
+    stat.new("duration",       stat.abs())
     stat.new("dials",          stat.abs())
     stat.new("errors_send",    stat.abs())
     stat.new("errors_receive", stat.abs())
     stat.new("threads",        stat.abs())
-    stat.new("messages_in",    stat.per("1s", {measure="rps"}), stat.abs())
-    stat.new("messages_out",   stat.per("1s", {measure=""}), stat.abs())
-    stat.new("delay",          stat.avg({measure="msec"}))
+    stat.new("messages_in",    stat.per("1s"), stat.abs())
+    stat.new("messages_out",   stat.per("1s"), stat.abs())
+    stat.new("delay",          stat.avg())
 end
 
 function done()
     stat.add("duration", time.now(time.s) - start)
-    print(stat.pretty())
+--    print(stat.pretty())
 end
 
 function setup(thread, id)
@@ -50,29 +51,25 @@ function reconnect(thread)
 end
 
 function tick(thread)
-    local tags = {
-        thread=thread:get("id")
-    }
-
     local err = thread:send(message)
     if err ~= nil then
         print("send error:", err)
-        stat.add("errors_send", 1, tags)
+        stat.add("errors_send", 1)
         thread:sleep(sleep)
         return
     else
-        stat.add("messages_out", 1, tags)
+        stat.add("messages_out", 1)
     end
 
     local start = time.now(time.ms)
     local _, err = thread:receive()
     if err ~= nil then
         print("receive error:", err)
-        stat.add("errors_receive", 1, tags)
+        stat.add("errors_receive", 1)
     else
-        stat.add("delay", time.now(time.ms) - start, tags)
-        stat.add("messages_in", 1, tags)
+        stat.add("delay", time.now(time.ms) - start)
+        stat.add("messages_in", 1)
     end
 
-    thread:sleep(sleep)
+--    thread:sleep(sleep)
 end

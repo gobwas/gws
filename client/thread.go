@@ -57,6 +57,7 @@ func ExportThread(t *Thread, L *lua.LState) *lua.LTable {
 			L.Push(lua.LString(err.Error()))
 			return 1
 		}
+		//time.Sleep(duration)
 		t.Sleep(duration)
 		return 0
 	}))
@@ -87,15 +88,15 @@ type Thread struct {
 	conn  Conn
 	data  map[string]interface{}
 	sleep chan time.Duration
-	awake chan empty
-	dead  chan struct{}
+	Awake chan empty
+	Dead  chan struct{}
 }
 
 func NewThread() *Thread {
 	t := &Thread{
 		data:  make(map[string]interface{}),
-		dead:  make(chan struct{}),
-		awake: make(chan empty),
+		Dead:  make(chan struct{}),
+		Awake: make(chan empty),
 		sleep: make(chan time.Duration, 1),
 	}
 
@@ -115,7 +116,7 @@ func (t *Thread) InitEventLoop() {
 			case duration := <-t.sleep:
 				// flush awake chan preventing any ticks run
 				select {
-				case <-t.awake:
+				case <-t.Awake:
 				default:
 				}
 
@@ -123,7 +124,7 @@ func (t *Thread) InitEventLoop() {
 				<-timer.C
 
 			// other way send signal that we could continue event loop
-			case t.awake <- empty{}:
+			case t.Awake <- empty{}:
 				// do nothing
 			}
 		}
@@ -161,7 +162,7 @@ func (t *Thread) Close() error {
 }
 
 func (t *Thread) Kill() {
-	close(t.dead)
+	close(t.Dead)
 }
 
 func (t *Thread) Sleep(duration time.Duration) {
@@ -170,9 +171,9 @@ func (t *Thread) Sleep(duration time.Duration) {
 
 func (t *Thread) NextTick() bool {
 	select {
-	case <-t.dead:
+	case <-t.Dead:
 		return false
-	case <-t.awake:
+	case <-t.Awake:
 		return true
 	}
 }

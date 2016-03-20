@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"github.com/gobwas/gws/cli"
@@ -10,14 +11,21 @@ import (
 	modStat "github.com/gobwas/gws/lua/mod/stat"
 	modTime "github.com/gobwas/gws/lua/mod/time"
 	"github.com/gobwas/gws/lua/script"
+	"github.com/gobwas/gws/stat"
+	"github.com/gobwas/gws/stat/counter/abs"
 	"github.com/gobwas/gws/util"
 	headersUtil "github.com/gobwas/gws/util/headers"
 	"github.com/gobwas/gws/ws"
 	"github.com/gorilla/websocket"
+	"golang.org/x/net/context"
 	"io"
+	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
 	"time"
@@ -117,15 +125,6 @@ func Go() error {
 	}
 }
 
-func safeClose(ch chan struct{}) {
-	select {
-	case <-ch:
-	// done has already closed
-	default:
-		close(ch)
-	}
-}
-
 type threadConn struct {
 	conn *websocket.Conn
 	kind ws.Kind
@@ -177,68 +176,132 @@ func getThreadConn(c config) (*threadConn, error) {
 	return &threadConn{conn, ws.TextMessage, nil}, nil
 }
 
-func GoLua(scriptPath string, c config) error {
-	timeMod := modTime.New()
-	statMod := modStat.New()
+var (
+	statStarted   = "gws_thread_started"
+	statCompleted = "gws_thread_completed"
+	statError     = "gws_thread_error"
+)
 
-	luaScript, err := script.New(scriptPath, statMod, timeMod)
+func GoLua(scriptPath string, c config) error {
+	statistics := stat.New()
+	moduleStat := modStat.New(statistics)
+	moduleTime := modTime.New()
+
+	// read file once to prevent max open files unnecessary error
+	scriptBytes, err := ioutil.ReadFile(scriptPath)
+	if err != nil {
+		return err
+	}
+	scriptCode := string(scriptBytes)
+
+	luaScript, err := script.New(scriptCode, moduleStat, moduleTime)
 	if err != nil {
 		log.Printf("create global lua script error: %s\n", err)
 		return err
 	}
-	if err := luaScript.CallMain(); err != nil {
-		log.Println(err)
+
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if c.timeout == 0 {
+		ctx, cancel = context.WithCancel(context.Background())
+	} else {
+		ctx, cancel = context.WithTimeout(context.Background(), c.timeout)
+	}
+
+	statistics.Setup(statStarted, stat.Config{
+		Factory: func() stat.Counter {
+			return abs.New()
+		},
+	})
+	statistics.Setup(statCompleted, stat.Config{
+		Factory: func() stat.Counter {
+			return abs.New()
+		},
+	})
+	statistics.Setup(statError, stat.Config{
+		Factory: func() stat.Counter {
+			return abs.New()
+		},
+	})
+
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt)
+		s := <-c
+		// todo printer clear ?
+		fmt.Print("\r")
+		fmt.Println(color.Cyan(cli.PrefixTheEnd), s.String())
+		cancel()
+		s = <-c
+		fmt.Print("\r")
+		fmt.Println(color.Red(cli.PrefixTheEnd), color.Yellow(s.String()+"x2"))
+		os.Exit(1)
+	}()
+
+	if err := luaScript.CallMain(ctx); err != nil {
 		return err
 	}
 
-	wg := sync.WaitGroup{}
-	wg.Add(*threads)
+	printer := display{
+		lines: []lineFn{
+			getStatLineFn(statistics),
+		},
+		done: make(chan struct{}),
+	}
+	printer.begin()
+
+	results := make(chan error, *threads)
 	for i := 0; i < *threads; i++ {
 		go func(i int) {
-			start := time.Now()
+			time.Sleep(time.Duration(rand.Int63n(int64(*threads))) * time.Millisecond * 2)
+			statistics.Increment(statStarted, 1, nil)
 
-			luaScript, err := script.New(scriptPath, statMod, timeMod)
+			luaScript, err := script.New(scriptCode, moduleStat, moduleTime)
 			if err != nil {
-				log.Printf("create #%d lua script error: %s\n", i, err)
-				wg.Done()
+				results <- err
 				return
 			}
 			defer func() {
 				luaScript.Close()
-				wg.Done()
 			}()
 
 			thread := NewThread()
 			luaThread := ExportThread(thread, luaScript.L)
 
 			// call setup on new thread
-			if err := luaScript.CallSetup(luaThread, i); err != nil {
-				log.Println(err)
+			if err := luaScript.CallSetup(ctx, luaThread, i); err != nil {
+				results <- err
 				return
 			}
 
 			for thread.NextTick() {
-				if c.timeout != 0 && time.Since(start) > c.timeout {
-					break
+				select {
+				case <-ctx.Done():
+					results <- ctx.Err()
+					return
+				default:
+					//
 				}
 
 				if !thread.HasConn() {
-					reconnect, err := luaScript.CallReconnect(luaThread)
+					reconnect, err := luaScript.CallReconnect(ctx, luaThread)
 					if err != nil {
-						log.Println(err)
+						results <- err
 						return
 					}
 
 					if !reconnect {
-						if err := luaScript.CallTeardown(luaThread); err != nil {
-							log.Println(err)
+						if err := luaScript.CallTeardown(ctx, luaThread); err != nil {
+							results <- err
+						} else {
+							results <- nil
 						}
 						return
 					}
 
 					tc, err := getThreadConn(c)
 					if err != nil {
-						log.Println(err)
+						results <- err
 						return
 					}
 					thread.SetConn(tc)
@@ -252,22 +315,98 @@ func GoLua(scriptPath string, c config) error {
 					continue
 				}
 
-				if err := luaScript.CallTick(luaThread); err != nil {
-					log.Println(err)
+				if err := luaScript.CallTick(ctx, luaThread); err != nil {
+					results <- err
 					return
 				}
 			}
 		}(i)
 	}
 
-	wg.Wait()
+	var stop bool
+	for i := 0; i < *threads && !stop; i++ {
+		select {
+		case <-ctx.Done():
+			stop = true
+		case err := <-results:
+			if err != nil {
+				statistics.Increment(statError, 1, nil)
+				if common.Verbose {
+					log.Println(err)
+				}
+			} else {
+				statistics.Increment(statCompleted, 1, nil)
+			}
+		}
+	}
 
-	if err := luaScript.CallDone(); err != nil {
+	printer.stop()
+
+	doneCtx, _ := context.WithTimeout(context.Background(), time.Second)
+	if err := luaScript.CallDone(doneCtx); err != nil {
 		log.Println(err)
 		return err
 	}
 
+	printer.update()
+
 	return nil
+}
+
+func getStatLineFn(statistics *stat.Statistics) lineFn {
+	return func() string {
+		return statistics.Pretty()
+	}
+}
+
+type lineFn func() string
+
+type display struct {
+	index  int64
+	height int
+	lines  []lineFn
+	done   chan struct{}
+}
+
+func (d *display) begin() {
+	ticker := time.Tick(time.Millisecond * 100)
+	go func() {
+		for {
+			select {
+			case <-ticker:
+				d.update()
+			case <-d.done:
+				return
+			}
+		}
+	}()
+}
+
+func (d *display) update() {
+	buf := &bytes.Buffer{}
+	for _, line := range d.lines {
+		fmt.Fprintln(buf, line())
+	}
+
+	if d.height > 0 {
+		fmt.Printf("\033[%dA", d.height)
+	}
+	d.height = bytes.Count(buf.Bytes(), []byte{'\n'})
+	io.Copy(os.Stderr, buf)
+}
+
+func (d *display) stop() {
+	close(d.done)
+}
+
+var threadStat = sync.Mutex{}
+
+func updateThreadStat(started, completed, failed int32) {
+	if !common.Verbose {
+		threadStat.Lock()
+		fmt.Printf("\rstarted: %d;\tcompleted: %d;\tfailed: %d;\t", started, completed, failed)
+		threadStat.Unlock()
+	}
 }
 
 //func GoIO(u string, h http.Header, r io.Reader, verbose bool, limit int, l *lua.LState) error {
