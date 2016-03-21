@@ -70,6 +70,7 @@ func ExportThread(t *Thread, L *lua.LState) *lua.LTable {
 		}
 		return 1
 	}))
+	//todo accept close code for ws
 	thread.RawSetString("kill", L.NewClosure(func(L *lua.LState) int {
 		t.Kill()
 		return 0
