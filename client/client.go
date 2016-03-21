@@ -320,6 +320,7 @@ func GoLua(scriptPath string, c config) error {
 					return
 				}
 			}
+			results <- nil
 		}(i)
 	}
 
