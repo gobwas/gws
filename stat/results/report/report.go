@@ -42,9 +42,11 @@ func (p *Report) String() string {
 	tags := p.getTagNamesOrder()
 	meta := p.getMetaNamesOrder()
 
-	fields := append([]string{titleCaption, titleKind})
+	var fields []string
+	fields = append(fields, titleCaption)
 	fields = append(fields, tags...)
 	fields = append(fields, titleValue)
+	fields = append(fields, titleKind)
 	fields = append(fields, meta...)
 
 	buf := &bytes.Buffer{}
@@ -52,9 +54,9 @@ func (p *Report) String() string {
 	for _, result := range p.getResultsOrdered(tags, meta) {
 		var line []pair
 		line = append(line, pair{titleCaption, result.Name})
-		line = append(line, pair{titleKind, result.Kind})
 		line = append(line, resultTagPairs(tags, result)...)
 		line = append(line, pair{titleValue, valueToString(result.Value)})
+		line = append(line, pair{titleKind, result.Kind})
 		line = append(line, resultMetaPairs(meta, result)...)
 		p.printLine(buf, line)
 	}
