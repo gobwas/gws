@@ -32,6 +32,16 @@ func (m *Mod) Exports() lua.LGFunction {
 			L.Push(lua.LNumber(now))
 			return 1
 		}))
+		mod.RawSetString("sleep", L.NewClosure(func(L *lua.LState) int {
+			arg := L.ToString(1)
+			duration, err := time.ParseDuration(arg)
+			if err != nil {
+				L.Push(lua.LString(err.Error()))
+				return 1
+			}
+			time.Sleep(duration)
+			return 0
+		}))
 
 		L.Push(mod)
 		return 1
