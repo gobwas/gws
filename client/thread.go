@@ -84,8 +84,12 @@ type Conn interface {
 }
 
 type Thread struct {
-	mu    sync.Mutex
-	conn  Conn
+	mu   sync.Mutex
+	conn Conn
+
+	// todo remove it this is hot fix
+	dead bool
+
 	data  map[string]interface{}
 	sleep chan time.Duration
 	Awake chan empty
@@ -163,13 +167,20 @@ func (t *Thread) Close() error {
 
 func (t *Thread) Kill() {
 	close(t.Dead)
+	t.dead = true
 }
 
 func (t *Thread) Sleep(duration time.Duration) {
 	t.sleep <- duration
 }
 
+// todo use may be plain time.Sleep() for thread sleep?
+// refactor this anyway
 func (t *Thread) NextTick() bool {
+	if t.dead {
+		return false
+	}
+
 	select {
 	case <-t.Dead:
 		return false
