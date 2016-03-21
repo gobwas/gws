@@ -21,6 +21,14 @@ func (a *Abs) Add(v float64) {
 	a.mu.Unlock()
 }
 
+func (a *Abs) Reset() {
+	a.mu.Lock()
+	{
+		a.value = 0
+	}
+	a.mu.Unlock()
+}
+
 func (a *Abs) Flush() (result float64) {
 	a.mu.Lock()
 	{

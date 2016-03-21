@@ -23,6 +23,15 @@ func (a *Avg) Add(v float64) {
 	a.mu.Unlock()
 }
 
+func (a *Avg) Reset() {
+	a.mu.Lock()
+	{
+		a.count = 0
+		a.value = 0
+	}
+	a.mu.Unlock()
+}
+
 func (a *Avg) Flush() (result float64) {
 	a.mu.Lock()
 	{
@@ -31,9 +40,6 @@ func (a *Avg) Flush() (result float64) {
 		} else {
 			result = a.value / a.count
 		}
-
-		a.count = 0
-		a.value = 0
 	}
 	a.mu.Unlock()
 	return

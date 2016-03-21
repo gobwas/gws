@@ -27,6 +27,15 @@ func (p *Per) Add(v float64) {
 	p.mu.Unlock()
 }
 
+func (p *Per) Reset() {
+	p.mu.Lock()
+	{
+		p.value = 0
+		p.stamp = time.Now()
+	}
+	p.mu.Unlock()
+}
+
 func (p *Per) Flush() (result float64) {
 	p.mu.Lock()
 	{
@@ -36,9 +45,6 @@ func (p *Per) Flush() (result float64) {
 		} else {
 			result = p.value / k
 		}
-
-		p.value = 0
-		p.stamp = time.Now()
 	}
 	p.mu.Unlock()
 	return
