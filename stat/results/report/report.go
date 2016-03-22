@@ -69,8 +69,8 @@ func (p *Report) String() string {
 func (p *Report) getResultsOrdered(tagsOrder, metaOrder []string) []results.Result {
 	orderer := sorter.New(
 		&sorter.CaptionComparator{},
-		&sorter.KindComparator{},
 		&sorter.TagsComparator{tagsOrder},
+		&sorter.KindComparator{},
 		&sorter.ValueComparator{},
 	)
 	return orderer.Sort(p.results)
