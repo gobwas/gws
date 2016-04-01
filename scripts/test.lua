@@ -1,5 +1,6 @@
-local stat = require("gws.stat")
-local time = require("gws.time")
+local gwsc  = require("gwsc")
+local stat = require("stat")
+local time = require("time")
 
 local message = "test message"
 local sleep = "10ms"
@@ -7,36 +8,57 @@ local dialLimit = 100
 local start = time.now(time.s)
 
 function main()
-    print("main")
-    stat.new("duration",       stat.abs())
-    stat.new("dials",          stat.abs())
-    stat.new("errors_send",    stat.abs())
-    stat.new("errors_receive", stat.abs())
-    stat.new("threads",        stat.abs())
-    stat.new("messages_in",    stat.per("1s"), stat.abs())
-    stat.new("messages_out",   stat.per("1s"), stat.abs())
-    stat.new("delay",          stat.avg())
+    if gwsc.isMaster() then
+        stat.new("duration",       stat.abs())
+        stat.new("dials",          stat.abs())
+        stat.new("errors_send",    stat.abs())
+        stat.new("errors_receive", stat.abs())
+        stat.new("threads",        stat.abs())
+        stat.new("messages_in",    stat.per("1s"), stat.abs())
+        stat.new("messages_out",   stat.per("1s"), stat.abs())
+        stat.new("delay",          stat.avg())
+
+        for i = 0, gwsc.getThreadsCount() do
+            gwsc.fork()
+        end
+
+        gwsc.on("exit", exit)
+    else
+        local thread, err = gwsc.getCurrentThread()
+        if err ~= nil then
+            print("get current thread error:", err)
+        else
+            setup(thread)
+        end
+    end
 end
 
-function done()
+local function exit()
     stat.add("duration", time.now(time.s) - start)
---    print(stat.pretty())
+    --    print(stat.pretty())
 end
 
-function setup(thread, id)
+local function setup(thread, id)
     stat.add("threads", 1)
     thread:set("id", id)
     thread:set("attempts", 0)
+
+    thread:on("reconnect", reconnect)
+    thread:on("teardown", teardown)
+
+    thread:nextTick(tick)
+    thread:setTimeout(tick, "1ms")
 end
 
-function teardown(thread)
-    print("thread teardown", thread:get("id"))
+
+local function teardown(thread)
+    print("thread teardown", thread:get("_id"))
 end
 
 -- reconnect return true for thread's connection should be alive,
 -- or false for connection should stay closed, and thread eventually die
 -- reconnect called on connections was closed (by server, or by thread.close())
-function reconnect(thread)
+local function reconnect(thread)
     stat.add("dials", 1)
 
     local attempts = thread:get("attempts")
@@ -50,7 +72,7 @@ function reconnect(thread)
     return true
 end
 
-function tick(thread)
+local function tick(thread)
     local err = thread:send(message)
     if err ~= nil then
         print("send error:", err)
@@ -73,3 +95,4 @@ function tick(thread)
 
 --    thread:sleep(sleep)
 end
+
