@@ -1,4 +1,4 @@
-local gwsc  = require("gwsc")
+local runtime = require("gws")
 local stat = require("stat")
 local time = require("time")
 
@@ -7,30 +7,23 @@ local sleep = "10ms"
 local dialLimit = 100
 local start = time.now(time.s)
 
-function main()
-    if gwsc.isMaster() then
-        stat.new("duration",       stat.abs())
-        stat.new("dials",          stat.abs())
-        stat.new("errors_send",    stat.abs())
-        stat.new("errors_receive", stat.abs())
-        stat.new("threads",        stat.abs())
-        stat.new("messages_in",    stat.per("1s"), stat.abs())
-        stat.new("messages_out",   stat.per("1s"), stat.abs())
-        stat.new("delay",          stat.avg())
+if runtime.isMaster() then
+    runtime.on("exit", exit)
 
-        for i = 0, gwsc.getThreadsCount() do
-            gwsc.fork()
-        end
+    stat.new("duration",       stat.abs())
+    stat.new("dials",          stat.abs())
+    stat.new("errors_send",    stat.abs())
+    stat.new("errors_receive", stat.abs())
+    stat.new("threads",        stat.abs())
+    stat.new("messages_in",    stat.per("1s"), stat.abs())
+    stat.new("messages_out",   stat.per("1s"), stat.abs())
+    stat.new("delay",          stat.avg())
 
-        gwsc.on("exit", exit)
-    else
-        local thread, err = gwsc.getCurrentThread()
-        if err ~= nil then
-            print("get current thread error:", err)
-        else
-            setup(thread)
-        end
+    for i = 0, 100 do
+        runtime.fork()
     end
+else
+    setup()
 end
 
 local function exit()
@@ -38,50 +31,39 @@ local function exit()
     --    print(stat.pretty())
 end
 
-local function setup(thread, id)
+local id;
+local attempts = 0;
+
+local function setup()
     stat.add("threads", 1)
-    thread:set("id", id)
-    thread:set("attempts", 0)
-
-    thread:on("reconnect", reconnect)
-    thread:on("teardown", teardown)
-
-    thread:nextTick(tick)
-    thread:setTimeout(tick, "1ms")
+    id = runtime:get("id")
+    runtime.on("connect", connect)
+    runtime.on("teardown", teardown)
+    runtime.nextTick(tick)
 end
 
-
-local function teardown(thread)
-    print("thread teardown", thread:get("_id"))
-end
-
--- reconnect return true for thread's connection should be alive,
--- or false for connection should stay closed, and thread eventually die
--- reconnect called on connections was closed (by server, or by thread.close())
-local function reconnect(thread)
+local function connect()
     stat.add("dials", 1)
-
-    local attempts = thread:get("attempts")
     if attempts+1 > dialLimit then
-        return false
+        runtime.exit()
+    else
+        attempts = attempts + 1
     end
+end
 
-    thread:set("attempts", attempts +1)
-    thread:sleep("1s")
-
-    return true
+local function teardown()
+    print("thread teardown", id, attempts)
 end
 
 local function tick(thread)
-    local err = thread:send(message)
+    local timeout;
+    local err = runtime.send(message)
     if err ~= nil then
         print("send error:", err)
         stat.add("errors_send", 1)
-        thread:sleep(sleep)
-        return
-    else
-        stat.add("messages_out", 1)
+        return runtime.setTimeout(tick, sleep)
     end
+    stat.add("messages_out", 1)
 
     local start = time.now(time.ms)
     local _, err = thread:receive()
@@ -93,6 +75,6 @@ local function tick(thread)
         stat.add("messages_in", 1)
     end
 
---    thread:sleep(sleep)
+    runtime.setTimeout(tick, 0)
 end
 

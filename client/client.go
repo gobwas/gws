@@ -184,6 +184,22 @@ var (
 
 func GoLua(scriptPath string, c config) error {
 	statistics := stat.New()
+	statistics.Setup(statStarted, stat.Config{
+		Factory: func() stat.Counter {
+			return abs.New()
+		},
+	})
+	statistics.Setup(statCompleted, stat.Config{
+		Factory: func() stat.Counter {
+			return abs.New()
+		},
+	})
+	statistics.Setup(statError, stat.Config{
+		Factory: func() stat.Counter {
+			return abs.New()
+		},
+	})
+
 	moduleStat := modStat.New(statistics)
 	moduleTime := modTime.New()
 
@@ -207,22 +223,6 @@ func GoLua(scriptPath string, c config) error {
 	} else {
 		ctx, cancel = context.WithTimeout(context.Background(), c.timeout)
 	}
-
-	statistics.Setup(statStarted, stat.Config{
-		Factory: func() stat.Counter {
-			return abs.New()
-		},
-	})
-	statistics.Setup(statCompleted, stat.Config{
-		Factory: func() stat.Counter {
-			return abs.New()
-		},
-	})
-	statistics.Setup(statError, stat.Config{
-		Factory: func() stat.Counter {
-			return abs.New()
-		},
-	})
 
 	go func() {
 		c := make(chan os.Signal, 1)
