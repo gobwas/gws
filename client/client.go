@@ -7,25 +7,25 @@ import (
 	"github.com/gobwas/gws/cli"
 	"github.com/gobwas/gws/cli/color"
 	cliInput "github.com/gobwas/gws/cli/input"
+	"github.com/gobwas/gws/client/ev"
+	evWS "github.com/gobwas/gws/client/ev/ws"
 	"github.com/gobwas/gws/common"
+	"github.com/gobwas/gws/lua/mod/runtime"
 	modStat "github.com/gobwas/gws/lua/mod/stat"
 	modTime "github.com/gobwas/gws/lua/mod/time"
+	modWS "github.com/gobwas/gws/lua/mod/ws"
 	"github.com/gobwas/gws/lua/script"
 	"github.com/gobwas/gws/stat"
-	"github.com/gobwas/gws/stat/counter/abs"
 	"github.com/gobwas/gws/util"
 	headersUtil "github.com/gobwas/gws/util/headers"
 	"github.com/gobwas/gws/ws"
 	"github.com/gorilla/websocket"
-	"golang.org/x/net/context"
 	"io"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
 	"time"
@@ -183,176 +183,225 @@ var (
 )
 
 func GoLua(scriptPath string, c config) error {
-	statistics := stat.New()
-	statistics.Setup(statStarted, stat.Config{
-		Factory: func() stat.Counter {
-			return abs.New()
-		},
-	})
-	statistics.Setup(statCompleted, stat.Config{
-		Factory: func() stat.Counter {
-			return abs.New()
-		},
-	})
-	statistics.Setup(statError, stat.Config{
-		Factory: func() stat.Counter {
-			return abs.New()
-		},
-	})
-
-	moduleStat := modStat.New(statistics)
-	moduleTime := modTime.New()
-
-	// read file once to prevent max open files unnecessary error
-	scriptBytes, err := ioutil.ReadFile(scriptPath)
-	if err != nil {
+	var code string
+	if script, err := ioutil.ReadFile(scriptPath); err != nil {
 		return err
-	}
-	scriptCode := string(scriptBytes)
-
-	luaScript, err := script.New(scriptCode, moduleStat, moduleTime)
-	if err != nil {
-		log.Printf("create global lua script error: %s\n", err)
-		return err
-	}
-
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if c.timeout == 0 {
-		ctx, cancel = context.WithCancel(context.Background())
 	} else {
-		ctx, cancel = context.WithTimeout(context.Background(), c.timeout)
+		code = string(script)
 	}
 
-	go func() {
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt)
-		s := <-c
-		// todo printer clear ?
-		fmt.Print("\r")
-		fmt.Println(color.Cyan(cli.PrefixTheEnd), s.String())
-		cancel()
-		s = <-c
-		fmt.Print("\r")
-		fmt.Println(color.Red(cli.PrefixTheEnd), color.Yellow(s.String()+"x2"))
-		os.Exit(1)
-	}()
+	luaScript := script.New()
+	defer luaScript.Shutdown()
+	luaScript.HijackOutput(color.Green("master > "), os.Stderr)
 
-	if err := luaScript.CallMain(ctx); err != nil {
+	loop := ev.NewLoop()
+	loop.Register(evWS.NewHandler(), 100)
+
+	master := runtime.New(loop, true)
+	master.Set("url", c.uri.String())
+	master.Set("headers", headersToMap(c.headers))
+
+	luaScript.Preload("runtime", master)
+	luaScript.Preload("stat", modStat.New(stat.New()))
+	luaScript.Preload("time", modTime.New(loop))
+	luaScript.Preload("ws", modWS.New(loop))
+
+	err := luaScript.Do(code)
+	if err != nil {
+		log.Printf("run lua script error: %s", err)
 		return err
 	}
 
-	printer := display{
-		lines: []lineFn{
-			getStatLineFn(statistics),
-		},
-		done: make(chan struct{}),
-	}
-	printer.begin()
+	loop.Run()
+	loop.Teardown(func() {
+		master.Emit("exit")
+	})
+	<-loop.Done()
 
-	results := make(chan error, *threads)
-	for i := 0; i < *threads; i++ {
-		go func(i int) {
-			time.Sleep(time.Duration(rand.Int63n(int64(*threads))) * time.Millisecond * 2)
-			statistics.Increment(statStarted, 1, nil)
-
-			luaScript, err := script.New(scriptCode, moduleStat, moduleTime)
-			if err != nil {
-				results <- err
-				return
-			}
-			defer func() {
-				luaScript.Close()
-			}()
-
-			thread := NewThread()
-			luaThread := ExportThread(thread, luaScript.L)
-
-			// call setup on new thread
-			if err := luaScript.CallSetup(ctx, luaThread, i); err != nil {
-				results <- err
-				return
-			}
-
-			for thread.NextTick() {
-				select {
-				case <-ctx.Done():
-					results <- ctx.Err()
-					return
-				default:
-					//
-				}
-
-				if !thread.HasConn() {
-					reconnect, err := luaScript.CallReconnect(ctx, luaThread)
-					if err != nil {
-						results <- err
-						return
-					}
-
-					if !reconnect {
-						if err := luaScript.CallTeardown(ctx, luaThread); err != nil {
-							results <- err
-						} else {
-							results <- nil
-						}
-						return
-					}
-
-					tc, err := getThreadConn(c)
-					if err != nil {
-						results <- err
-						return
-					}
-					thread.SetConn(tc)
-
-					continue
-				}
-
-				if thread.conn.(*threadConn).Error() != nil {
-					thread.conn.Close()
-					thread.conn = nil
-					continue
-				}
-
-				if err := luaScript.CallTick(ctx, luaThread); err != nil {
-					results <- err
-					return
-				}
-			}
-			results <- nil
-		}(i)
-	}
-
-	var stop bool
-	for i := 0; i < *threads && !stop; i++ {
-		select {
-		case <-ctx.Done():
-			stop = true
-		case err := <-results:
-			if err != nil {
-				statistics.Increment(statError, 1, nil)
-				if common.Verbose {
-					log.Println(err)
-				}
-			} else {
-				statistics.Increment(statCompleted, 1, nil)
-			}
-		}
-	}
-
-	printer.stop()
-
-	doneCtx, _ := context.WithTimeout(context.Background(), time.Second)
-	if err := luaScript.CallDone(doneCtx); err != nil {
-		log.Println(err)
-		return err
-	}
-
-	printer.update()
-
+	os.Exit(0)
 	return nil
 }
+
+func headersToMap(h http.Header) map[string]string {
+	m := make(map[string]string)
+	for key := range h {
+		m[key] = h.Get(key)
+	}
+	return m
+}
+
+//
+//func GoLua(scriptPath string, c config) error {
+//	statistics := stat.New()
+//	statistics.Setup(statStarted, stat.Config{
+//		Factory: func() stat.Counter {
+//			return abs.New()
+//		},
+//	})
+//	statistics.Setup(statCompleted, stat.Config{
+//		Factory: func() stat.Counter {
+//			return abs.New()
+//		},
+//	})
+//	statistics.Setup(statError, stat.Config{
+//		Factory: func() stat.Counter {
+//			return abs.New()
+//		},
+//	})
+//
+//	moduleStat := modStat.New(statistics)
+//	moduleTime := modTime.New()
+//
+//	// read file once to prevent max open files unnecessary error
+//	scriptBytes, err := ioutil.ReadFile(scriptPath)
+//	if err != nil {
+//		return err
+//	}
+//	scriptCode := string(scriptBytes)
+//
+//	luaScript, err := script.New(scriptCode, moduleStat, moduleTime)
+//	if err != nil {
+//		log.Printf("create global lua script error: %s\n", err)
+//		return err
+//	}
+//
+//	var ctx context.Context
+//	var cancel context.CancelFunc
+//	if c.timeout == 0 {
+//		ctx, cancel = context.WithCancel(context.Background())
+//	} else {
+//		ctx, cancel = context.WithTimeout(context.Background(), c.timeout)
+//	}
+//
+//	go func() {
+//		c := make(chan os.Signal, 1)
+//		signal.Notify(c, os.Interrupt)
+//		s := <-c
+//		// todo printer clear ?
+//		fmt.Print("\r")
+//		fmt.Println(color.Cyan(cli.PrefixTheEnd), s.String())
+//		cancel()
+//		s = <-c
+//		fmt.Print("\r")
+//		fmt.Println(color.Red(cli.PrefixTheEnd), color.Yellow(s.String()+"x2"))
+//		os.Exit(1)
+//	}()
+//
+//	if err := luaScript.CallMain(ctx); err != nil {
+//		return err
+//	}
+//
+//	printer := display{
+//		lines: []lineFn{
+//			getStatLineFn(statistics),
+//		},
+//		done: make(chan struct{}),
+//	}
+//	printer.begin()
+//
+//	results := make(chan error, *threads)
+//	for i := 0; i < *threads; i++ {
+//		go func(i int) {
+//			time.Sleep(time.Duration(rand.Int63n(int64(*threads))) * time.Millisecond * 2)
+//			statistics.Increment(statStarted, 1, nil)
+//
+//			luaScript, err := script.New(scriptCode, moduleStat, moduleTime)
+//			if err != nil {
+//				results <- err
+//				return
+//			}
+//			defer func() {
+//				luaScript.Close()
+//			}()
+//
+//			thread := NewThread()
+//			luaThread := ExportThread(thread, luaScript.l)
+//
+//			// call setup on new thread
+//			if err := luaScript.CallSetup(ctx, luaThread, i); err != nil {
+//				results <- err
+//				return
+//			}
+//
+//			for thread.NextTick() {
+//				select {
+//				case <-ctx.Done():
+//					results <- ctx.Err()
+//					return
+//				default:
+//					//
+//				}
+//
+//				if !thread.HasConn() {
+//					reconnect, err := luaScript.CallReconnect(ctx, luaThread)
+//					if err != nil {
+//						results <- err
+//						return
+//					}
+//
+//					if !reconnect {
+//						if err := luaScript.CallTeardown(ctx, luaThread); err != nil {
+//							results <- err
+//						} else {
+//							results <- nil
+//						}
+//						return
+//					}
+//
+//					tc, err := getThreadConn(c)
+//					if err != nil {
+//						results <- err
+//						return
+//					}
+//					thread.SetConn(tc)
+//
+//					continue
+//				}
+//
+//				if thread.conn.(*threadConn).Error() != nil {
+//					thread.conn.Close()
+//					thread.conn = nil
+//					continue
+//				}
+//
+//				if err := luaScript.CallTick(ctx, luaThread); err != nil {
+//					results <- err
+//					return
+//				}
+//			}
+//			results <- nil
+//		}(i)
+//	}
+//
+//	var stop bool
+//	for i := 0; i < *threads && !stop; i++ {
+//		select {
+//		case <-ctx.Done():
+//			stop = true
+//		case err := <-results:
+//			if err != nil {
+//				statistics.Increment(statError, 1, nil)
+//				if common.Verbose {
+//					log.Println(err)
+//				}
+//			} else {
+//				statistics.Increment(statCompleted, 1, nil)
+//			}
+//		}
+//	}
+//
+//	printer.stop()
+//
+//	doneCtx, _ := context.WithTimeout(context.Background(), time.Second)
+//	if err := luaScript.CallDone(doneCtx); err != nil {
+//		log.Println(err)
+//		return err
+//	}
+//
+//	printer.update()
+//
+//	return nil
+//}
 
 func getStatLineFn(statistics *stat.Statistics) lineFn {
 	return func() string {

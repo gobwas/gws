@@ -21,7 +21,6 @@ func New(s *stat.Statistics) *Mod {
 func (m *Mod) Exports() lua.LGFunction {
 	return func(L *lua.LState) int {
 		mod := L.NewTable()
-		L.SetField(mod, "name", lua.LString(m.Name()))
 		mod.RawSetString("new", L.NewClosure(registerNew(m.statistics)))
 		mod.RawSetString("abs", L.NewClosure(registerAbs(m.statistics)))
 		mod.RawSetString("avg", L.NewClosure(registerAvg(m.statistics)))
@@ -33,11 +32,6 @@ func (m *Mod) Exports() lua.LGFunction {
 		L.Push(mod)
 		return 1
 	}
-}
-
-func (m *Mod) Name() string {
-	const moduleName = "gws.stat"
-	return moduleName
 }
 
 const (

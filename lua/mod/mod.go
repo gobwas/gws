@@ -2,7 +2,6 @@ package mod
 
 import "github.com/yuin/gopher-lua"
 
-type Mod interface {
+type Module interface {
 	Exports() lua.LGFunction
-	Name() string
 }

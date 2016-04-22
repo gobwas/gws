@@ -4,6 +4,7 @@ import (
 	"github.com/gorilla/websocket"
 	"io"
 	"io/ioutil"
+	"net/http"
 )
 
 type Kind int
@@ -34,6 +35,7 @@ func (m Kind) String() string {
 }
 
 type MessageRaw struct {
+	Seq  int32
 	Kind Kind
 	Data []byte
 }
@@ -44,7 +46,12 @@ type Message struct {
 	Err  error
 }
 
-func WriteToConnChan(conn *websocket.Conn, done <-chan struct{}, output <-chan MessageRaw, errors chan<- error) {
+type Error struct {
+	Seq int32
+	Err error
+}
+
+func WriteToConnFromChan(done <-chan struct{}, conn *websocket.Conn, output <-chan MessageRaw, errors chan<- Error) {
 	go func() {
 		select {
 		case <-done:
@@ -55,10 +62,43 @@ func WriteToConnChan(conn *websocket.Conn, done <-chan struct{}, output <-chan M
 			if err != nil {
 				select {
 				case <-done:
-					return
-				case errors <- err:
-					return
+				case errors <- Error{msg.Seq, err}:
 				}
+				return
+			}
+		}
+	}()
+}
+
+func ReadFromConnToChan(done <-chan struct{}, conn *websocket.Conn, ch chan<- MessageRaw, errors chan<- Error) {
+	go func() {
+		for {
+			var msg MessageRaw
+			var err error
+			t, r, e := conn.NextReader()
+			if e != nil {
+				err = io.EOF
+			} else {
+				b, e := ioutil.ReadAll(r)
+				if e != nil {
+					err = e
+				} else {
+					msg = MessageRaw{Data: b, Kind: Kind(t)}
+				}
+			}
+
+			if err != nil {
+				select {
+				case <-done:
+				case errors <- Error{Seq: -1, Err: err}:
+				}
+				return
+			}
+
+			select {
+			case <-done:
+				return
+			case ch <- msg:
 			}
 		}
 	}()
@@ -130,4 +170,10 @@ func ReadAsyncFromConn(done <-chan struct{}, conn *websocket.Conn) <-chan Messag
 	ch := make(chan Message)
 	ReadFromConnInto(done, conn, ch)
 	return ch
+}
+
+func GetConn(uri string, h http.Header) (conn *websocket.Conn, resp *http.Response, err error) {
+	dialer := &websocket.Dialer{}
+	conn, resp, err = dialer.Dial(uri, h)
+	return
 }

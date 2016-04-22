@@ -1,7 +1,6 @@
 package script
 
 import (
-	"bytes"
 	"fmt"
 	"github.com/gobwas/gws/lua/mod"
 	"github.com/yuin/gopher-lua"
@@ -19,22 +18,30 @@ const (
 )
 
 type Script struct {
-	L   *lua.LState
-	Out io.Reader
+	luaState *lua.LState
 }
 
-func New(script string, m ...mod.Mod) (*Script, error) {
-	L := lua.NewState()
-	for _, module := range m {
-		L.PreloadModule(module.Name(), module.Exports())
+func New() *Script {
+	return &Script{
+		luaState: lua.NewState(),
 	}
-	if err := L.DoString(script); err != nil {
-		return nil, err
-	}
+}
 
-	io := &bytes.Buffer{}
-	L.SetGlobal("print", L.NewFunction(func(L *lua.LState) int {
-		var buf []byte
+func (s *Script) Preload(name string, m mod.Module) {
+	s.luaState.PreloadModule(name, m.Exports())
+}
+
+func (s *Script) Do(code string) error {
+	return s.luaState.DoString(code)
+}
+
+func (s *Script) Shutdown() {
+	s.luaState.Close()
+}
+
+func (s *Script) HijackOutput(prefix string, w io.Writer) {
+	s.luaState.SetGlobal("print", s.luaState.NewFunction(func(L *lua.LState) int {
+		buf := []byte(prefix)
 		for i := 1; ; i++ {
 			def := L.Get(i)
 			if _, ok := def.(*lua.LNilType); ok {
@@ -42,19 +49,15 @@ func New(script string, m ...mod.Mod) (*Script, error) {
 			}
 			buf = append(buf, []byte(def.String())...)
 		}
-		io.Write(buf)
-		io.WriteByte('\n')
-
+		w.Write(append(buf, '\n'))
 		return 0
 	}))
-
-	return &Script{L, io}, nil
 }
 
 func (s *Script) CallMain(ctx context.Context) error {
 	return callAsync(ctx, functionMain, func() error {
-		return s.L.CallByParam(lua.P{
-			Fn:      s.L.GetGlobal(functionMain),
+		return s.luaState.CallByParam(lua.P{
+			Fn:      s.luaState.GetGlobal(functionMain),
 			NRet:    0,
 			Protect: true,
 		})
@@ -63,8 +66,8 @@ func (s *Script) CallMain(ctx context.Context) error {
 
 func (s *Script) CallDone(ctx context.Context) error {
 	return callAsync(ctx, functionDone, func() error {
-		return s.L.CallByParam(lua.P{
-			Fn:      s.L.GetGlobal(functionDone),
+		return s.luaState.CallByParam(lua.P{
+			Fn:      s.luaState.GetGlobal(functionDone),
 			NRet:    0,
 			Protect: true,
 		})
@@ -73,8 +76,8 @@ func (s *Script) CallDone(ctx context.Context) error {
 
 func (s *Script) CallSetup(ctx context.Context, thread *lua.LTable, index int) error {
 	return callAsync(ctx, functionSetup, func() error {
-		return s.L.CallByParam(lua.P{
-			Fn:      s.L.GetGlobal(functionSetup),
+		return s.luaState.CallByParam(lua.P{
+			Fn:      s.luaState.GetGlobal(functionSetup),
 			NRet:    0,
 			Protect: true,
 		}, thread, lua.LNumber(index))
@@ -83,8 +86,8 @@ func (s *Script) CallSetup(ctx context.Context, thread *lua.LTable, index int) e
 
 func (s *Script) CallTeardown(ctx context.Context, thread *lua.LTable) error {
 	return callAsync(ctx, functionTeardown, func() error {
-		return s.L.CallByParam(lua.P{
-			Fn:      s.L.GetGlobal(functionTeardown),
+		return s.luaState.CallByParam(lua.P{
+			Fn:      s.luaState.GetGlobal(functionTeardown),
 			NRet:    0,
 			Protect: true,
 		}, thread)
@@ -93,8 +96,8 @@ func (s *Script) CallTeardown(ctx context.Context, thread *lua.LTable) error {
 
 func (s *Script) CallTick(ctx context.Context, thread *lua.LTable) error {
 	return callAsync(ctx, functionTick, func() error {
-		return s.L.CallByParam(lua.P{
-			Fn:      s.L.GetGlobal(functionTick),
+		return s.luaState.CallByParam(lua.P{
+			Fn:      s.luaState.GetGlobal(functionTick),
 			NRet:    0,
 			Protect: true,
 		}, thread)
@@ -103,22 +106,22 @@ func (s *Script) CallTick(ctx context.Context, thread *lua.LTable) error {
 
 func (s *Script) CallReconnect(ctx context.Context, thread *lua.LTable) (bool, error) {
 	return callAsyncBool(ctx, functionReconnect, func() (ok bool, err error) {
-		err = s.L.CallByParam(lua.P{
-			Fn:      s.L.GetGlobal(functionReconnect),
+		err = s.luaState.CallByParam(lua.P{
+			Fn:      s.luaState.GetGlobal(functionReconnect),
 			NRet:    1,
 			Protect: true,
 		}, thread)
 		if err != nil {
 			return
 		}
-		ok = s.L.ToBool(-1)
-		s.L.Pop(1)
+		ok = s.luaState.ToBool(-1)
+		s.luaState.Pop(1)
 		return
 	})
 }
 
 func (s *Script) Close() {
-	s.L.Close()
+	s.luaState.Close()
 }
 
 func callAsync(ctx context.Context, label string, actor func() error) (err error) {
