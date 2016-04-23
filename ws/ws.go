@@ -34,10 +34,23 @@ func (m Kind) String() string {
 	}
 }
 
+type WriteRequest struct {
+	Message MessageRaw
+	Result  chan error
+}
+
+type ReceiveRequest struct {
+	Result chan MessageAndError
+}
+
 type MessageRaw struct {
-	Seq  int32
 	Kind Kind
 	Data []byte
+}
+
+type MessageAndError struct {
+	Message MessageRaw
+	Error   error
 }
 
 type Message struct {
@@ -46,59 +59,37 @@ type Message struct {
 	Err  error
 }
 
-type Error struct {
-	Seq int32
-	Err error
-}
-
-func WriteToConnFromChan(done <-chan struct{}, conn *websocket.Conn, output <-chan MessageRaw, errors chan<- Error) {
+func WriteToConnFromChan(done <-chan struct{}, conn *websocket.Conn, output <-chan WriteRequest) {
 	go func() {
-		select {
-		case <-done:
-			return
+		for {
+			select {
+			case <-done:
+				return
 
-		case msg := <-output:
-			err := WriteToConn(conn, msg.Kind, msg.Data)
-			if err != nil {
+			case req := <-output:
+				err := WriteToConn(conn, req.Message.Kind, req.Message.Data)
 				select {
 				case <-done:
-				case errors <- Error{msg.Seq, err}:
+				case req.Result <- err:
 				}
-				return
 			}
 		}
 	}()
 }
 
-func ReadFromConnToChan(done <-chan struct{}, conn *websocket.Conn, ch chan<- MessageRaw, errors chan<- Error) {
+func ReadFromConnToChan(done <-chan struct{}, conn *websocket.Conn, ch <-chan ReceiveRequest) {
 	go func() {
 		for {
-			var msg MessageRaw
-			var err error
-			t, r, e := conn.NextReader()
-			if e != nil {
-				err = io.EOF
-			} else {
-				b, e := ioutil.ReadAll(r)
-				if e != nil {
-					err = e
-				} else {
-					msg = MessageRaw{Data: b, Kind: Kind(t)}
-				}
-			}
-
-			if err != nil {
-				select {
-				case <-done:
-				case errors <- Error{Seq: -1, Err: err}:
-				}
-				return
-			}
-
 			select {
 			case <-done:
 				return
-			case ch <- msg:
+
+			case req := <-ch:
+				m, err := ReadFromConn(conn)
+				select {
+				case <-done:
+				case req.Result <- MessageAndError{m, err}:
+				}
 			}
 		}
 	}()
@@ -138,6 +129,7 @@ func ReadFromConn(conn *websocket.Conn) (msg MessageRaw, err error) {
 	return
 }
 
+//todo refactor this to dedup
 func ReadFromConnInto(done <-chan struct{}, conn *websocket.Conn, ch chan<- Message) {
 	go func() {
 		for {

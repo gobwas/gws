@@ -7,10 +7,37 @@ local start = time.now(time.s)
 
 ws.connect({ url = runtime.get("url") }, function(err, conn)
     if (err ~= nil) then
-        print("could not connect ", err)
+        print("could not connect: ", err)
     else
         print("connected!")
-        conn.send()
+        conn.send("hello, my lord!", function(err)
+            if err ~= nil then
+                print("send error: ", err)
+            end
+        end)
+
+        time.setTimeout(1500, function()
+            print("timeout!")
+            print("sync send: ", conn.send("DDD"))
+        end)
+
+        local cnt = 0
+        conn.listen(function(err, msg)
+            if err ~= nil then
+                print("receive error: ", err)
+            else
+                cnt = cnt + 1
+                print("received: ", msg)
+                if cnt > 1 then
+                    print("will close now!")
+                    conn.close()
+                end
+            end
+        end)
+
+        conn.on("close", function()
+            print("conn closed")
+        end)
     end
 end)
 
@@ -18,7 +45,7 @@ end)
 
 if runtime.isMaster() then
     runtime.on("exit", function()
-        print("bye!")
+        print("exiting now.. bye!")
         stat.add("duration", time.now(time.s) - start)
         --    print(stat.pretty())
     end)
