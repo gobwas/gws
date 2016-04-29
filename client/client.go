@@ -10,7 +10,7 @@ import (
 	"github.com/gobwas/gws/client/ev"
 	evWS "github.com/gobwas/gws/client/ev/ws"
 	"github.com/gobwas/gws/common"
-	"github.com/gobwas/gws/lua/mod/runtime"
+	modRuntime "github.com/gobwas/gws/lua/mod/runtime"
 	modStat "github.com/gobwas/gws/lua/mod/stat"
 	modTime "github.com/gobwas/gws/lua/mod/time"
 	modWS "github.com/gobwas/gws/lua/mod/ws"
@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
 	"time"
@@ -182,6 +183,27 @@ var (
 	statError     = "gws_thread_error"
 )
 
+func buildScript(prefix string, stat *modStat.Stat, rtime *modRuntime.Runtime) *script.Script {
+	luaScript := script.New()
+	defer luaScript.Shutdown()
+	luaScript.HijackOutput(color.Green(prefix), os.Stderr)
+
+	loop := ev.NewLoop()
+	loop.Register(evWS.NewHandler(), 100)
+
+	luaScript.Preload("time", modTime.New(loop))
+	luaScript.Preload("ws", modWS.New(loop))
+
+	return luaScript
+}
+
+func initRunTime(loop *ev.Loop, c config) *modRuntime.Runtime {
+	rtime := modRuntime.New(loop)
+	rtime.Set("url", c.uri.String())
+	rtime.Set("headers", headersToMap(c.headers))
+	return rtime
+}
+
 func GoLua(scriptPath string, c config) error {
 	var code string
 	if script, err := ioutil.ReadFile(scriptPath); err != nil {
@@ -190,6 +212,20 @@ func GoLua(scriptPath string, c config) error {
 		code = string(script)
 	}
 
+	cancel := make(chan struct{})
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt)
+		s := <-c
+		fmt.Print("\r")
+		fmt.Println(color.Cyan(cli.PrefixTheEnd), s.String())
+		close(cancel)
+		s = <-c
+		fmt.Print("\r")
+		fmt.Println(color.Red(cli.PrefixTheEnd), color.Yellow(s.String()+"x2"))
+		os.Exit(1)
+	}()
+
 	luaScript := script.New()
 	defer luaScript.Shutdown()
 	luaScript.HijackOutput(color.Green("master > "), os.Stderr)
@@ -197,12 +233,54 @@ func GoLua(scriptPath string, c config) error {
 	loop := ev.NewLoop()
 	loop.Register(evWS.NewHandler(), 100)
 
-	master := runtime.New(loop, true)
-	master.Set("url", c.uri.String())
-	master.Set("headers", headersToMap(c.headers))
+	sharedStat := modStat.New(stat.New())
 
-	luaScript.Preload("runtime", master)
-	luaScript.Preload("stat", modStat.New(stat.New()))
+	var wg sync.WaitGroup
+	var threads int32
+	rtime := initRunTime(loop, c)
+	rtime.SetForkFn(func() error {
+		go func(id int32) {
+			defer wg.Done()
+			luaScript := script.New()
+			defer luaScript.Shutdown()
+			luaScript.HijackOutput(color.Green(fmt.Sprintf("thread %.2d > ", id)), os.Stderr)
+
+			loop := ev.NewLoop()
+			loop.Register(evWS.NewHandler(), 100)
+
+			rtime := initRunTime(loop, c)
+			luaScript.Preload("runtime", rtime)
+			luaScript.Preload("stat", sharedStat)
+			luaScript.Preload("time", modTime.New(loop))
+			luaScript.Preload("ws", modWS.New(loop))
+
+			err := luaScript.Do(code)
+			if err != nil {
+				log.Printf("run forked lua script error: %s", err)
+			}
+
+			loop.Run()
+			loop.Teardown(func() {
+				rtime.Emit("exit")
+			})
+
+			select {
+			case <-loop.Done():
+			case <-cancel:
+				loop.Stop()
+				<-loop.Done()
+			}
+
+		}(threads)
+
+		wg.Add(1)
+		threads++
+
+		return nil
+	})
+
+	luaScript.Preload("runtime", rtime)
+	luaScript.Preload("stat", sharedStat)
 	luaScript.Preload("time", modTime.New(loop))
 	luaScript.Preload("ws", modWS.New(loop))
 
@@ -214,9 +292,17 @@ func GoLua(scriptPath string, c config) error {
 
 	loop.Run()
 	loop.Teardown(func() {
-		master.Emit("exit")
+		rtime.Emit("exit")
 	})
-	<-loop.Done()
+
+	select {
+	case <-loop.Done():
+	case <-cancel:
+		loop.Stop()
+		<-loop.Done()
+	}
+
+	wg.Wait()
 
 	os.Exit(0)
 	return nil

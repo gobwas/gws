@@ -10,15 +10,15 @@ import (
 	"time"
 )
 
-type Mod struct {
+type Stat struct {
 	statistics *stat.Statistics
 }
 
-func New(s *stat.Statistics) *Mod {
-	return &Mod{s}
+func New(s *stat.Statistics) *Stat {
+	return &Stat{s}
 }
 
-func (m *Mod) Exports() lua.LGFunction {
+func (m *Stat) Exports() lua.LGFunction {
 	return func(L *lua.LState) int {
 		mod := L.NewTable()
 		mod.RawSetString("new", L.NewClosure(registerNew(m.statistics)))

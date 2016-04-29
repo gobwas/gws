@@ -5,44 +5,6 @@ local ws = require("ws")
 
 local start = time.now(time.s)
 
-ws.connect({ url = runtime.get("url") }, function(err, conn)
-    if (err ~= nil) then
-        print("could not connect: ", err)
-    else
-        print("connected!")
-        conn.send("hello, my lord!", function(err)
-            if err ~= nil then
-                print("send error: ", err)
-            end
-        end)
-
-        time.setTimeout(1500, function()
-            print("timeout!")
-            print("sync send: ", conn.send("DDD"))
-        end)
-
-        local cnt = 0
-        conn.listen(function(err, msg)
-            if err ~= nil then
-                print("receive error: ", err)
-            else
-                cnt = cnt + 1
-                print("received: ", msg)
-                if cnt > 1 then
-                    print("will close now!")
-                    conn.close()
-                end
-            end
-        end)
-
-        conn.on("close", function()
-            print("conn closed")
-        end)
-    end
-end)
-
-
-
 if runtime.isMaster() then
     runtime.on("exit", function()
         print("exiting now.. bye!")
@@ -59,7 +21,7 @@ if runtime.isMaster() then
     stat.new("messages_out",   stat.per("1s"), stat.abs())
     stat.new("delay",          stat.avg())
 
-    for i = 0, 99 do
+    for i = 0, 1 do
         runtime.fork()
     end
 
@@ -68,16 +30,63 @@ end
 
 -- This is a fork part
 
+local limit = 10
+
 ws.connect({ url = runtime.get("url") }, function(err, conn)
---    conn.on("message", function(message)
---        print("got message", message)
---    end)
---
---    conn.send("hello", function(err)
---        print("sent", err)
---    end)
---
---    conn.close(function(err)
---        print("closed", err)
---    end)
+    if (err ~= nil) then
+        print("could not connect: ", err)
+        return
+    end
+
+    print("connected to ", runtime.get("url"))
+    conn.send("hello, my lord!", function(err)
+        if err ~= nil then
+            print("async send error: ", err)
+        else
+            print("async send ok")
+        end
+    end)
+
+    time.setTimeout(1500, function()
+        print("timeout!")
+        local err = conn.send("SYNC MESSAGE");
+        if err ~= nil then
+            print("sync send error:", err);
+        else
+            print("sync send ok");
+        end
+    end)
+
+    local cnt = 0
+    conn.listen(function(err, msg)
+        if err ~= nil then
+            print("receive error: ", err)
+        else
+            local text = "received: %s (%d)"
+            print(text.format(text, msg, cnt))
+
+--            if cnt > limit+1 then
+--                print("will close now!")
+--                conn.close()
+--            end
+            cnt = cnt + 1
+        end
+    end)
+
+    conn.on("close", function()
+        print("conn closed")
+    end)
+
+    for i = 0, limit do
+        local err = conn.send(string.format("message %d", i))
+        if err ~= nil then
+            print(i, err)
+            return
+        end
+    end
+end)
+
+runtime.on("exit", function()
+    print("thread is exiting now.. bye!")
+    --    print(stat.pretty())
 end)

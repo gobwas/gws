@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"errors"
 	"github.com/gorilla/websocket"
 	"sync"
 )
@@ -24,16 +25,24 @@ func NewConnection(c *websocket.Conn) *Connection {
 	}
 }
 
-func (c *Connection) Send(msg MessageRaw) error {
+func (c *Connection) SendAsync(msg MessageRaw) chan error {
 	resp := make(chan error)
 	c.out <- WriteRequest{msg, resp}
-	return <-resp
+	return resp
+}
+
+func (c *Connection) Send(msg MessageRaw) error {
+	return <-c.SendAsync(msg)
+}
+
+func (c *Connection) ReceiveAsync() chan MessageAndError {
+	resp := make(chan MessageAndError)
+	c.in <- ReceiveRequest{resp}
+	return resp
 }
 
 func (c *Connection) Receive() (MessageRaw, error) {
-	resp := make(chan MessageAndError)
-	c.in <- ReceiveRequest{resp}
-	result := <-resp
+	result := <-c.ReceiveAsync()
 	return result.Message, result.Error
 }
 
@@ -54,6 +63,14 @@ func (c *Connection) InitIOWorkers() {
 }
 
 func (c *Connection) Close() error {
-	close(c.done)
+	select {
+	case <-c.done:
+		return errors.New("already closed")
+	default:
+		close(c.done)
+		close(c.in)
+		close(c.out)
+	}
+
 	return c.conn.Close()
 }

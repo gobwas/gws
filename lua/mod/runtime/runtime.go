@@ -8,13 +8,13 @@ import (
 	"time"
 )
 
-type Mod struct {
+type Runtime struct {
 	exported int32
 	initTime time.Time
 	loop     *ev.Loop
 	emitter  *mod.Emitter
 	storage  *mod.Storage
-	master   bool
+	fork     forkFn
 }
 
 type callback struct {
@@ -22,31 +22,39 @@ type callback struct {
 	fn    *lua.LFunction
 }
 
-func New(loop *ev.Loop, master bool) *Mod {
-	return &Mod{
+type forkFn func() error
+
+func New(loop *ev.Loop) *Runtime {
+	return &Runtime{
 		emitter:  mod.NewEmitter(),
 		storage:  mod.NewStorage(),
 		initTime: time.Now(),
 		loop:     loop,
-		master:   master,
 	}
 }
 
-func (m *Mod) Emit(name string) {
+func (m *Runtime) SetForkFn(f forkFn) {
+	if atomic.LoadInt32(&m.exported) > 0 {
+		panic("could not set fork function after runtime is exported")
+	}
+	m.fork = f
+}
+
+func (m *Runtime) Emit(name string) {
 	m.loop.Call(func() {
 		m.emitter.Emit(name)
 	})
 }
 
-func (m *Mod) Set(key string, value interface{}) {
+func (m *Runtime) Set(key string, value interface{}) {
 	m.storage.Set(key, value)
 }
 
-func (m *Mod) Get(key string) (result interface{}) {
+func (m *Runtime) Get(key string) (result interface{}) {
 	return m.storage.Get(key)
 }
 
-func (m *Mod) Exports() lua.LGFunction {
+func (m *Runtime) Exports() lua.LGFunction {
 	if atomic.LoadInt32(&m.exported) > 0 {
 		panic("runtime could be exported only once")
 	} else {
@@ -56,14 +64,18 @@ func (m *Mod) Exports() lua.LGFunction {
 	return func(L *lua.LState) int {
 		mod := L.NewTable()
 
-		if m.master {
+		if m.fork != nil {
 			mod.RawSetString("fork", L.NewClosure(func(L *lua.LState) int {
+				if err := m.fork(); err != nil {
+					L.Push(lua.LString(err.Error()))
+					return 1
+				}
 				return 0
 			}))
 		}
 
 		mod.RawSetString("isMaster", L.NewClosure(func(L *lua.LState) int {
-			L.Push(lua.LBool(m.master))
+			L.Push(lua.LBool(m.fork != nil))
 			return 1
 		}))
 

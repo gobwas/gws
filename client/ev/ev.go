@@ -12,6 +12,7 @@ type Callback func(error, interface{})
 type Handler interface {
 	Handle(*Loop, interface{}, Callback) error
 	IsActive() bool
+	Stop()
 }
 
 type Loop struct {
@@ -24,11 +25,17 @@ type Loop struct {
 	timers    []*Timer
 	now       time.Time
 	done      chan struct{}
+	shutdown  chan struct{}
+	stop      chan struct{}
+	locked    bool
 	//	idles    []Idle
 }
 
 func NewLoop() *Loop {
 	return &Loop{
+		done:     make(chan struct{}),
+		shutdown: make(chan struct{}),
+		stop:     make(chan struct{}),
 		handlers: make(map[RequestType][]Handler),
 		now:      time.Now(),
 	}
@@ -42,11 +49,13 @@ func (l *Loop) Register(h Handler, t RequestType) {
 func (l *Loop) Request(t RequestType, data interface{}, cb Callback) error {
 	l.mu.Lock()
 	{
-		l.requests = append(l.requests, &request{
-			t:    t,
-			cb:   cb,
-			data: data,
-		})
+		if !l.locked {
+			l.requests = append(l.requests, &request{
+				t:    t,
+				cb:   cb,
+				data: data,
+			})
+		}
 	}
 	l.mu.Unlock()
 	return nil
@@ -55,15 +64,9 @@ func (l *Loop) Request(t RequestType, data interface{}, cb Callback) error {
 func (l *Loop) Call(cb event) {
 	l.mu.Lock()
 	{
-		l.events = append(l.events, cb)
-	}
-	l.mu.Unlock()
-}
-
-func (l *Loop) Teardown(cb event) {
-	l.mu.Lock()
-	{
-		l.teardowns = append(l.teardowns, cb)
+		if !l.locked {
+			l.events = append(l.events, cb)
+		}
 	}
 	l.mu.Unlock()
 }
@@ -77,37 +80,77 @@ func (l *Loop) Timeout(delay time.Duration, repeat bool, cb event) *Timer {
 
 	l.mu.Lock()
 	{
-		timer.next = l.now.Add(timer.delay)
-		l.timers = append(l.timers, timer)
+		if !l.locked {
+			timer.next = l.now.Add(timer.delay)
+			l.timers = append(l.timers, timer)
+		}
 	}
 	l.mu.Unlock()
 
 	return timer
 }
 
+func (l *Loop) Teardown(cb event) {
+	l.mu.Lock()
+	{
+		l.teardowns = append(l.teardowns, cb)
+	}
+	l.mu.Unlock()
+}
+
 func (l *Loop) Done() chan struct{} {
 	return l.done
 }
 
+func (l *Loop) Shutdown() {
+	close(l.shutdown)
+}
+
+func (l *Loop) Stop() {
+	l.stop <- struct{}{}
+}
+
+func (l *Loop) lock() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.locked = true
+}
+
 func (l *Loop) Run() error {
-	l.done = make(chan struct{})
+	//	l.mu.Lock()
+	//	defer l.mu.Unlock()
+	// TODO(s.kamardin): what we should do if we run twice?
+
 	go func() {
 		for {
-			if !l.IsAlive() {
-				if !l.nextTeardown() {
-					close(l.done)
-					return
-				}
-			} else {
-				l.updateNow()
-				l.drainTimers()
-				l.drainTicks()
+			select {
+			case <-l.shutdown:
+				close(l.done)
+				return
 
-				l.nextEvent()
-				l.nextRequest()
+			case <-l.stop:
+				l.drainTeardown()
+				l.stopHandlers()
+				l.lock()
+
+			default:
+				if !l.IsAlive() {
+					if !l.drainTeardown() {
+						close(l.done)
+						return
+					}
+				} else {
+					l.updateNow()
+					l.drainTimers()
+					l.drainTicks()
+
+					l.nextEvent()
+					l.nextRequest()
+				}
 			}
 		}
 	}()
+
 	return nil
 }
 
@@ -124,6 +167,9 @@ func (l *Loop) IsAlive() bool {
 	if len(l.timers) > 0 {
 		return true
 	}
+	//	if l.locked {
+	//		return false
+	//	}
 
 	for _, handlers := range l.handlers {
 		for _, handler := range handlers {
@@ -138,6 +184,17 @@ func (l *Loop) IsAlive() bool {
 
 func (l *Loop) updateNow() {
 	l.now = time.Now()
+}
+
+func (l *Loop) stopHandlers() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for _, handlers := range l.handlers {
+		for _, h := range handlers {
+			h.Stop()
+		}
+	}
 }
 
 func (l *Loop) drainTimers() {
@@ -185,7 +242,24 @@ func (l *Loop) deleteTimer(i int) {
 }
 
 func (l *Loop) drainTicks() {
-	//
+	// TODO(s.kamardin)
+}
+
+func (l *Loop) drainTeardown() bool {
+	var callbacks []event
+
+	l.mu.Lock()
+	{
+		callbacks = l.teardowns
+		l.teardowns = nil
+	}
+	l.mu.Unlock()
+
+	for _, cb := range callbacks {
+		cb()
+	}
+
+	return len(callbacks) > 0
 }
 
 func (l *Loop) nextTeardown() bool {

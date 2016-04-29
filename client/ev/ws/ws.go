@@ -1,7 +1,6 @@
 package ws
 
 import (
-	"errors"
 	"fmt"
 	"github.com/gobwas/gws/client/ev"
 	"github.com/gobwas/gws/ws"
@@ -11,10 +10,13 @@ import (
 
 type Handler struct {
 	pending int32
+	stop    chan struct{}
 }
 
 func NewHandler() *Handler {
-	return &Handler{}
+	return &Handler{
+		stop: make(chan struct{}),
+	}
 }
 
 type Connect struct {
@@ -28,19 +30,13 @@ type Send struct {
 }
 
 type Receive struct {
-	done chan struct{}
 	conn *ws.Connection
 }
 
 func NewReceive(c *ws.Connection) *Receive {
 	return &Receive{
-		done: make(chan struct{}),
 		conn: c,
 	}
-}
-
-func (r *Receive) Stop() {
-	close(r.done)
 }
 
 func (h *Handler) Handle(loop *ev.Loop, data interface{}, cb ev.Callback) error {
@@ -59,6 +55,14 @@ func (h *Handler) Handle(loop *ev.Loop, data interface{}, cb ev.Callback) error 
 	}
 
 	return nil
+}
+
+func (h *Handler) Stop() {
+	close(h.stop)
+}
+
+func (h *Handler) IsActive() bool {
+	return atomic.LoadInt32(&h.pending) > 0
 }
 
 func (h *Handler) doConnect(loop *ev.Loop, req Connect, cb ev.Callback) {
@@ -105,18 +109,14 @@ func (h *Handler) doReceive(loop *ev.Loop, req *Receive, cb ev.Callback) {
 
 		for {
 			select {
+			case <-h.stop:
+				return
+
 			case <-req.conn.Done():
 				return
 
-			case <-req.done:
-				fmt.Println("Closed receive")
-				loop.Call(func() {
-					cb(errors.New("listen was interrupted"), nil)
-				})
-				return
-
-			default:
-				msg, err := req.conn.Receive()
+			case envelope := <-req.conn.ReceiveAsync():
+				msg, err := envelope.Message, envelope.Error
 				if err != nil {
 					loop.Call(func() {
 						cb(err, nil)
@@ -130,8 +130,4 @@ func (h *Handler) doReceive(loop *ev.Loop, req *Receive, cb ev.Callback) {
 			}
 		}
 	}()
-}
-
-func (h *Handler) IsActive() bool {
-	return atomic.LoadInt32(&h.pending) > 0
 }

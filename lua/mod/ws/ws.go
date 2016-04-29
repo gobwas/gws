@@ -115,7 +115,7 @@ func (c *Conn) ToTable(L *lua.LState) *lua.LTable {
 		msg := ws.MessageRaw{ws.TextMessage, []byte(str)}
 
 		cb := L.ToFunction(2)
-		if cb == nil { // if there is no callback - act synchronous
+		if cb == nil { // if there is no callback - call is synchronous
 			if err := c.conn.Send(msg); err != nil {
 				L.Push(lua.LString(err.Error()))
 				return 1
@@ -169,7 +169,8 @@ func (c *Conn) ToTable(L *lua.LState) *lua.LTable {
 
 	table.RawSetString("receive", L.NewClosure(func(L *lua.LState) int {
 		if c.receive != nil {
-			c.receive.Stop()
+			L.Push(lua.LString("could not receive synchronous: there are already registered listeners"))
+			return 1
 		}
 
 		msg, err := c.conn.Receive()
@@ -185,8 +186,11 @@ func (c *Conn) ToTable(L *lua.LState) *lua.LTable {
 	}))
 
 	table.RawSetString("close", L.NewClosure(func(L *lua.LState) int {
-		c.receive.Stop()
-		c.conn.Close()
+		if err := c.conn.Close(); err != nil {
+			L.Push(lua.LString(err.Error()))
+			return 1
+		}
+
 		c.Emit("close")
 		return 0
 	}))
