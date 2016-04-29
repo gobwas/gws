@@ -30,7 +30,7 @@ end
 
 -- This is a fork part
 
-local limit = 10
+local limit = 1000
 
 ws.connect({ url = runtime.get("url") }, function(err, conn)
     if (err ~= nil) then
