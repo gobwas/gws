@@ -49,6 +49,11 @@ const (
 func registerNew(s *stat.Statistics) lua.LGFunction {
 	return func(L *lua.LState) int {
 		name := L.ToString(1)
+		err := s.New(name)
+		if err != nil {
+			L.Push(lua.LString(err.Error()))
+			return 1
+		}
 
 		for i := 2; ; i++ {
 			def := L.ToTable(i)

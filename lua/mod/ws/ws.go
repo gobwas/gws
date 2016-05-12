@@ -1,8 +1,8 @@
 package ws
 
 import (
-	"github.com/gobwas/gws/client/ev"
-	evws "github.com/gobwas/gws/client/ev/ws"
+	"github.com/gobwas/gws/ev"
+	evws "github.com/gobwas/gws/ev/ws"
 	"github.com/gobwas/gws/lua/mod"
 	"github.com/gobwas/gws/ws"
 	"github.com/yuin/gopher-lua"

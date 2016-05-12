@@ -2,7 +2,7 @@ package ws
 
 import (
 	"fmt"
-	"github.com/gobwas/gws/client/ev"
+	"github.com/gobwas/gws/ev"
 	"github.com/gobwas/gws/ws"
 	"net/http"
 	"sync/atomic"

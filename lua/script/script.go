@@ -39,9 +39,9 @@ func (s *Script) Shutdown() {
 	s.luaState.Close()
 }
 
-func (s *Script) HijackOutput(prefix string, w io.Writer) {
+func (s *Script) HijackOutput(w io.Writer) {
 	s.luaState.SetGlobal("print", s.luaState.NewFunction(func(L *lua.LState) int {
-		buf := []byte(prefix)
+		var buf []byte
 		for i := 1; ; i++ {
 			def := L.Get(i)
 			if _, ok := def.(*lua.LNilType); ok {

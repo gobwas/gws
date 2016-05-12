@@ -21,7 +21,7 @@ if runtime.isMaster() then
     stat.new("messages_out",   stat.per("1s"), stat.abs())
     stat.new("delay",          stat.avg())
 
-    for i = 0, 1 do
+    for i = 0, 127 do
         runtime.fork()
     end
 

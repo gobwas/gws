@@ -1,19 +1,21 @@
 package runtime
 
 import (
-	"github.com/gobwas/gws/client/ev"
+	"github.com/gobwas/gws/ev"
 	"github.com/gobwas/gws/lua/mod"
 	"github.com/yuin/gopher-lua"
+	"runtime"
 	"sync/atomic"
 	"time"
 )
 
 type Runtime struct {
+	emitter *mod.Emitter
+	storage *mod.Storage
+
 	exported int32
 	initTime time.Time
 	loop     *ev.Loop
-	emitter  *mod.Emitter
-	storage  *mod.Storage
 	fork     forkFn
 }
 
@@ -78,6 +80,8 @@ func (m *Runtime) Exports() lua.LGFunction {
 			L.Push(lua.LBool(m.fork != nil))
 			return 1
 		}))
+
+		mod.RawSetString("numCPU", lua.LNumber(runtime.NumCPU()))
 
 		mod.RawSetString("set", m.storage.ExportSet(L))
 		mod.RawSetString("get", m.storage.ExportGet(L))

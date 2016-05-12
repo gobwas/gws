@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"github.com/gobwas/gws/bufio"
 	"github.com/gobwas/gws/cli"
 	"github.com/gobwas/gws/cli/color"
 	cliInput "github.com/gobwas/gws/cli/input"
-	"github.com/gobwas/gws/client/ev"
-	evWS "github.com/gobwas/gws/client/ev/ws"
 	"github.com/gobwas/gws/common"
+	"github.com/gobwas/gws/display"
+	"github.com/gobwas/gws/ev"
+	evWS "github.com/gobwas/gws/ev/ws"
 	modRuntime "github.com/gobwas/gws/lua/mod/runtime"
 	modStat "github.com/gobwas/gws/lua/mod/stat"
 	modTime "github.com/gobwas/gws/lua/mod/time"
@@ -33,11 +35,10 @@ import (
 )
 
 var (
-	uri        = flag.String("client.url", ":3000", "websocket url to connect")
-	limit      = flag.Int("client.try", 1, "try to reconnect x times")
-	scriptFile = flag.String("client.script", "", "use lua script to perform action")
-	threads    = flag.Int("client.threads", 1, "how many threads (clients) start to initialize with script")
-	timeout    = flag.String("client.script.timeout", "0", "client script run timeout")
+	uri        = flag.String("u", ":3000", "websocket url to connect")
+	limit      = flag.Int("retry", 1, "try to reconnect x times")
+	scriptFile = flag.String("s", "", "use lua script to perform action")
+	timeout    = flag.String("t", "0", "client script run timeout")
 )
 
 const headerOrigin = "Origin"
@@ -140,6 +141,7 @@ func (w *threadConn) Send(b []byte) error {
 	}
 	return nil
 }
+
 func (w *threadConn) Receive() ([]byte, error) {
 	for {
 		msg, err := ws.ReadFromConn(w.conn)
@@ -153,9 +155,11 @@ func (w *threadConn) Receive() ([]byte, error) {
 	}
 	panic("unexpected loop leave")
 }
+
 func (w *threadConn) Close() error {
 	return w.conn.Close()
 }
+
 func (w *threadConn) Error() error {
 	return w.err
 }
@@ -167,34 +171,6 @@ func getConnRaw(c config) (conn *websocket.Conn, err error) {
 		return nil, err
 	}
 	return conn, nil
-}
-func getThreadConn(c config) (*threadConn, error) {
-	conn, err := getConnRaw(c)
-	if err != nil {
-		return nil, err
-	}
-
-	return &threadConn{conn, ws.TextMessage, nil}, nil
-}
-
-var (
-	statStarted   = "gws_thread_started"
-	statCompleted = "gws_thread_completed"
-	statError     = "gws_thread_error"
-)
-
-func buildScript(prefix string, stat *modStat.Stat, rtime *modRuntime.Runtime) *script.Script {
-	luaScript := script.New()
-	defer luaScript.Shutdown()
-	luaScript.HijackOutput(color.Green(prefix), os.Stderr)
-
-	loop := ev.NewLoop()
-	loop.Register(evWS.NewHandler(), 100)
-
-	luaScript.Preload("time", modTime.New(loop))
-	luaScript.Preload("ws", modWS.New(loop))
-
-	return luaScript
 }
 
 func initRunTime(loop *ev.Loop, c config) *modRuntime.Runtime {
@@ -212,28 +188,34 @@ func GoLua(scriptPath string, c config) error {
 		code = string(script)
 	}
 
+	luaOutputBuffer := bytes.NewBuffer(make([]byte, 0, 1024))
+	luaStdout := bufio.NewWriter(luaOutputBuffer, 1024)
+
+	systemStdout := bytes.NewBuffer(make([]byte, 0, 1024))
+
 	cancel := make(chan struct{})
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt)
 		s := <-c
-		fmt.Print("\r")
-		fmt.Println(color.Cyan(cli.PrefixTheEnd), s.String())
+		fmt.Fprintln(systemStdout, color.Cyan(cli.PrefixTheEnd), s.String())
 		close(cancel)
 		s = <-c
-		fmt.Print("\r")
-		fmt.Println(color.Red(cli.PrefixTheEnd), color.Yellow(s.String()+"x2"))
+		fmt.Fprintln(systemStdout, color.Red(cli.PrefixTheEnd), color.Yellow(s.String()+"x2"))
+		time.Sleep(time.Second)
 		os.Exit(1)
 	}()
 
 	luaScript := script.New()
 	defer luaScript.Shutdown()
-	luaScript.HijackOutput(color.Green("master > "), os.Stderr)
+
+	luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green("master > ")))
 
 	loop := ev.NewLoop()
 	loop.Register(evWS.NewHandler(), 100)
 
-	sharedStat := modStat.New(stat.New())
+	stats := stat.New()
+	sharedStat := modStat.New(stats)
 
 	var wg sync.WaitGroup
 	var threads int32
@@ -243,7 +225,7 @@ func GoLua(scriptPath string, c config) error {
 			defer wg.Done()
 			luaScript := script.New()
 			defer luaScript.Shutdown()
-			luaScript.HijackOutput(color.Green(fmt.Sprintf("thread %.2d > ", id)), os.Stderr)
+			luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green(fmt.Sprintf("thread %.2d > ", id))))
 
 			loop := ev.NewLoop()
 			loop.Register(evWS.NewHandler(), 100)
@@ -284,6 +266,26 @@ func GoLua(scriptPath string, c config) error {
 	luaScript.Preload("time", modTime.New(loop))
 	luaScript.Preload("ws", modWS.New(loop))
 
+	printer := display.NewDisplay(os.Stderr, display.Config{
+		TabSize:  4,
+		Interval: time.Millisecond * 250,
+	})
+	printer.Row().Col(80, 2, func() (str string) {
+		str = systemStdout.String()
+		return
+	})
+	printer.Row().Col(-1, -1, func() string {
+		return stats.Pretty()
+	})
+	printer.Row().Col(-1, -1, func() (str string) {
+		luaStdout.Dump()
+		str = luaOutputBuffer.String()
+		luaOutputBuffer.Reset()
+		return
+	})
+
+	printer.Begin()
+
 	err := luaScript.Do(code)
 	if err != nil {
 		log.Printf("run lua script error: %s", err)
@@ -304,7 +306,10 @@ func GoLua(scriptPath string, c config) error {
 
 	wg.Wait()
 
+	printer.Render()
+	printer.Stop()
 	os.Exit(0)
+
 	return nil
 }
 
@@ -489,52 +494,6 @@ func headersToMap(h http.Header) map[string]string {
 //	return nil
 //}
 
-func getStatLineFn(statistics *stat.Statistics) lineFn {
-	return func() string {
-		return statistics.Pretty()
-	}
-}
-
-type lineFn func() string
-
-type display struct {
-	index  int64
-	height int
-	lines  []lineFn
-	done   chan struct{}
-}
-
-func (d *display) begin() {
-	ticker := time.Tick(time.Millisecond * 100)
-	go func() {
-		for {
-			select {
-			case <-ticker:
-				d.update()
-			case <-d.done:
-				return
-			}
-		}
-	}()
-}
-
-func (d *display) update() {
-	buf := &bytes.Buffer{}
-	for _, line := range d.lines {
-		fmt.Fprintln(buf, line())
-	}
-
-	if d.height > 0 {
-		fmt.Printf("\033[%dA", d.height)
-	}
-	d.height = bytes.Count(buf.Bytes(), []byte{'\n'})
-	io.Copy(os.Stderr, buf)
-}
-
-func (d *display) stop() {
-	close(d.done)
-}
-
 var threadStat = sync.Mutex{}
 
 func updateThreadStat(started, completed, failed int32) {
@@ -545,7 +504,6 @@ func updateThreadStat(started, completed, failed int32) {
 	}
 }
 
-//func GoIO(u string, h http.Header, r io.Reader, verbose bool, limit int, l *lua.LState) error {
 func GoIO(c config) error {
 	var conn *websocket.Conn
 	var err error

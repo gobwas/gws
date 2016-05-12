@@ -1,7 +1,7 @@
 package time
 
 import (
-	"github.com/gobwas/gws/client/ev"
+	"github.com/gobwas/gws/ev"
 	"github.com/yuin/gopher-lua"
 	"time"
 )
@@ -73,7 +73,26 @@ func (m *Mod) Exports() lua.LGFunction {
 			return 1
 		}))
 
-		mod.RawSetString("unsetTimeout", L.NewClosure(func(L *lua.LState) int {
+		mod.RawSetString("setInterval", L.NewClosure(func(L *lua.LState) int {
+			tm := L.ToNumber(1)
+			cb := L.ToFunction(2)
+
+			m.timeoutCounter++
+			timeout := m.loop.Timeout(time.Duration(tm)*time.Millisecond, true, func() {
+				L.CallByParam(lua.P{
+					Fn:      cb,
+					NRet:    0,
+					Protect: false,
+				})
+			})
+			m.timers[m.timeoutCounter] = timeout
+
+			L.Push(lua.LNumber(m.timeoutCounter))
+
+			return 1
+		}))
+
+		mod.RawSetString("unsetTimer", L.NewClosure(func(L *lua.LState) int {
 			id := L.ToNumber(1)
 			timeout, ok := m.timers[uint32(id)]
 			if !ok {

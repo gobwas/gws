@@ -129,6 +129,7 @@ func (l *Loop) Run() error {
 				return
 
 			case <-l.stop:
+				l.stopTimers()
 				l.drainTeardown()
 				l.stopHandlers()
 				l.lock()
@@ -194,6 +195,15 @@ func (l *Loop) stopHandlers() {
 		for _, h := range handlers {
 			h.Stop()
 		}
+	}
+}
+
+func (l *Loop) stopTimers() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for _, timer := range l.timers {
+		timer.Stop()
 	}
 }
 
