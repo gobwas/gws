@@ -77,10 +77,27 @@ func (s *Statistics) Pretty() string {
 	return report.String()
 }
 
+func (s *Statistics) New(name string) (err error) {
+	s.mu.Lock()
+	{
+		if _, ok := s.configs[name]; ok {
+			err = fmt.Errorf("metric %q already exists", name)
+		} else {
+			s.configs[name] = nil
+		}
+	}
+	s.mu.Unlock()
+	return
+}
+
 func (s *Statistics) Setup(name string, config Config) (err error) {
 	s.mu.Lock()
 	{
-		s.configs[name] = append(s.configs[name], &config)
+		if _, ok := s.configs[name]; !ok {
+			err = fmt.Errorf("metric %q is not exists", name)
+		} else {
+			s.configs[name] = append(s.configs[name], &config)
+		}
 	}
 	s.mu.Unlock()
 	return

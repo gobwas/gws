@@ -4,6 +4,7 @@ import (
 	"github.com/gorilla/websocket"
 	"io"
 	"io/ioutil"
+	"net/http"
 )
 
 type Kind int
@@ -33,9 +34,23 @@ func (m Kind) String() string {
 	}
 }
 
+type WriteRequest struct {
+	Message MessageRaw
+	Result  chan error
+}
+
+type ReceiveRequest struct {
+	Result chan MessageAndError
+}
+
 type MessageRaw struct {
 	Kind Kind
 	Data []byte
+}
+
+type MessageAndError struct {
+	Message MessageRaw
+	Error   error
 }
 
 type Message struct {
@@ -44,20 +59,36 @@ type Message struct {
 	Err  error
 }
 
-func WriteToConnChan(conn *websocket.Conn, done <-chan struct{}, output <-chan MessageRaw, errors chan<- error) {
+func WriteToConnFromChan(done <-chan struct{}, conn *websocket.Conn, output <-chan WriteRequest) {
 	go func() {
-		select {
-		case <-done:
-			return
+		for {
+			select {
+			case <-done:
+				return
 
-		case msg := <-output:
-			err := WriteToConn(conn, msg.Kind, msg.Data)
-			if err != nil {
+			case req := <-output:
+				err := WriteToConn(conn, req.Message.Kind, req.Message.Data)
 				select {
 				case <-done:
-					return
-				case errors <- err:
-					return
+				case req.Result <- err:
+				}
+			}
+		}
+	}()
+}
+
+func ReadFromConnToChan(done <-chan struct{}, conn *websocket.Conn, ch <-chan ReceiveRequest) {
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+
+			case req := <-ch:
+				m, err := ReadFromConn(conn)
+				select {
+				case <-done:
+				case req.Result <- MessageAndError{m, err}:
 				}
 			}
 		}
@@ -98,6 +129,7 @@ func ReadFromConn(conn *websocket.Conn) (msg MessageRaw, err error) {
 	return
 }
 
+//todo refactor this to dedup
 func ReadFromConnInto(done <-chan struct{}, conn *websocket.Conn, ch chan<- Message) {
 	go func() {
 		for {
@@ -130,4 +162,10 @@ func ReadAsyncFromConn(done <-chan struct{}, conn *websocket.Conn) <-chan Messag
 	ch := make(chan Message)
 	ReadFromConnInto(done, conn, ch)
 	return ch
+}
+
+func GetConn(uri string, h http.Header) (conn *websocket.Conn, resp *http.Response, err error) {
+	dialer := &websocket.Dialer{}
+	conn, resp, err = dialer.Dial(uri, h)
+	return
 }

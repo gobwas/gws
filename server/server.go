@@ -26,14 +26,14 @@ import (
 )
 
 var (
-	listen    = flag.String("server.listen", ":3000", "run ws server and listen this address")
-	origin    = flag.String("server.origin", "", "use this glob pattern for server origin checks")
-	heartbit  = flag.String("server.heartbit", "5s", "server statistics dump interval")
+	listen    = flag.String("l", ":3000", "address to listen")
+	origin    = flag.String("o", "", "use this glob pattern for server origin checks")
+	heartbit  = flag.String("dumpstat", "5s", "server statistics dump interval")
 	responder = &ResponderFlag{null, []string{echo, mirror, prompt, null}}
 )
 
 func init() {
-	flag.Var(responder, "server.responder", fmt.Sprintf("how should server response on message (%s)", strings.Join(responder.expect, ", ")))
+	flag.Var(responder, "response", fmt.Sprintf("how should server response on message (%s)", strings.Join(responder.expect, ", ")))
 }
 
 const (
