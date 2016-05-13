@@ -188,10 +188,33 @@ func GoLua(scriptPath string, c config) error {
 		code = string(script)
 	}
 
-	luaOutputBuffer := bytes.NewBuffer(make([]byte, 0, 1024))
-	luaStdout := bufio.NewWriter(luaOutputBuffer, 1024)
+	stats := stat.New()
+
+	luaOutputBuffer := bytes.NewBuffer(make([]byte, 0, 1<<13))
+	luaStdout := bufio.NewWriter(luaOutputBuffer, 1<<13)
 
 	systemStdout := bytes.NewBuffer(make([]byte, 0, 1024))
+
+	printer := display.NewDisplay(os.Stderr, display.Config{
+		TabSize:  4,
+		Interval: time.Millisecond * 100,
+	})
+	printer.Row().Col(-1, -1, func() string {
+		return stats.Pretty()
+	})
+	printer.Row().Col(256, 9, func() (str string) {
+		luaStdout.Dump()
+		str = luaOutputBuffer.String()
+		luaOutputBuffer.Reset()
+		return
+	})
+	printer.Row().Col(256, 3, func() (str string) {
+		str = systemStdout.String()
+		return
+	})
+	printer.Begin()
+	defer printer.Stop()
+	defer printer.Render()
 
 	cancel := make(chan struct{})
 	go func() {
@@ -199,10 +222,12 @@ func GoLua(scriptPath string, c config) error {
 		signal.Notify(c, os.Interrupt)
 		s := <-c
 		fmt.Fprintln(systemStdout, color.Cyan(cli.PrefixTheEnd), s.String())
+		fmt.Fprintln(systemStdout, color.Cyan("stopping softly.."))
 		close(cancel)
 		s = <-c
 		fmt.Fprintln(systemStdout, color.Red(cli.PrefixTheEnd), color.Yellow(s.String()+"x2"))
-		time.Sleep(time.Second)
+		fmt.Fprintln(systemStdout, color.Red("stopping hardly.."))
+		printer.Stop()
 		os.Exit(1)
 	}()
 
@@ -214,15 +239,15 @@ func GoLua(scriptPath string, c config) error {
 	loop := ev.NewLoop()
 	loop.Register(evWS.NewHandler(), 100)
 
-	stats := stat.New()
 	sharedStat := modStat.New(stats)
 
 	var wg sync.WaitGroup
-	var threads int32
+	var threads int
 	rtime := initRunTime(loop, c)
 	rtime.SetForkFn(func() error {
-		go func(id int32) {
+		go func(id int) {
 			defer wg.Done()
+
 			luaScript := script.New()
 			defer luaScript.Shutdown()
 			luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green(fmt.Sprintf("thread %.2d > ", id))))
@@ -231,6 +256,8 @@ func GoLua(scriptPath string, c config) error {
 			loop.Register(evWS.NewHandler(), 100)
 
 			rtime := initRunTime(loop, c)
+			rtime.Set("id", id)
+
 			luaScript.Preload("runtime", rtime)
 			luaScript.Preload("stat", sharedStat)
 			luaScript.Preload("time", modTime.New(loop))
@@ -246,13 +273,7 @@ func GoLua(scriptPath string, c config) error {
 				rtime.Emit("exit")
 			})
 
-			select {
-			case <-loop.Done():
-			case <-cancel:
-				loop.Stop()
-				<-loop.Done()
-			}
-
+			waitLoop(cancel, loop)
 		}(threads)
 
 		wg.Add(1)
@@ -266,26 +287,6 @@ func GoLua(scriptPath string, c config) error {
 	luaScript.Preload("time", modTime.New(loop))
 	luaScript.Preload("ws", modWS.New(loop))
 
-	printer := display.NewDisplay(os.Stderr, display.Config{
-		TabSize:  4,
-		Interval: time.Millisecond * 250,
-	})
-	printer.Row().Col(80, 2, func() (str string) {
-		str = systemStdout.String()
-		return
-	})
-	printer.Row().Col(-1, -1, func() string {
-		return stats.Pretty()
-	})
-	printer.Row().Col(-1, -1, func() (str string) {
-		luaStdout.Dump()
-		str = luaOutputBuffer.String()
-		luaOutputBuffer.Reset()
-		return
-	})
-
-	printer.Begin()
-
 	err := luaScript.Do(code)
 	if err != nil {
 		log.Printf("run lua script error: %s", err)
@@ -294,23 +295,28 @@ func GoLua(scriptPath string, c config) error {
 
 	loop.Run()
 	loop.Teardown(func() {
+		wg.Wait()
 		rtime.Emit("exit")
 	})
 
+	waitLoop(cancel, loop)
+	wg.Wait()
+
+	return nil
+}
+
+func waitLoop(cancel chan struct{}, loop *ev.Loop) {
 	select {
 	case <-loop.Done():
 	case <-cancel:
 		loop.Stop()
-		<-loop.Done()
+		shutdown := time.NewTimer(time.Second * 4)
+		select {
+		case <-loop.Done():
+		case <-shutdown.C:
+			loop.Shutdown()
+		}
 	}
-
-	wg.Wait()
-
-	printer.Render()
-	printer.Stop()
-	os.Exit(0)
-
-	return nil
 }
 
 func headersToMap(h http.Header) map[string]string {

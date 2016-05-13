@@ -35,7 +35,7 @@ func NewLoop() *Loop {
 	return &Loop{
 		done:     make(chan struct{}),
 		shutdown: make(chan struct{}),
-		stop:     make(chan struct{}),
+		stop:     make(chan struct{}, 1),
 		handlers: make(map[RequestType][]Handler),
 		now:      time.Now(),
 	}
@@ -119,9 +119,9 @@ func (l *Loop) lock() {
 func (l *Loop) Run() error {
 	//	l.mu.Lock()
 	//	defer l.mu.Unlock()
-	// TODO(s.kamardin): what we should do if we run twice?
+	// TODO(gobwas): what we should do if we run twice?
 
-	go func() {
+	go func(l *Loop) {
 		for {
 			select {
 			case <-l.shutdown:
@@ -150,7 +150,7 @@ func (l *Loop) Run() error {
 				}
 			}
 		}
-	}()
+	}(l)
 
 	return nil
 }

@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+const (
+	cursor_hide      = "\033[?25l"
+	cursor_show      = "\033[?25h"
+	cursor_move_top  = "\033[%dA"
+	cursor_move_left = "\033[%dD"
+)
+
 type ContentFn func() string
 
 type Column struct {
@@ -21,16 +28,18 @@ type Row struct {
 	columns []Column
 }
 
-func (r *Row) Column(z Column) {
+func (r *Row) Column(z Column) *Row {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.columns = append(r.columns, z)
+	return r
 }
 
-func (r *Row) Col(width, height int, c ContentFn) {
+func (r *Row) Col(width, height int, c ContentFn) *Row {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.columns = append(r.columns, Column{width, height, c})
+	return r
 }
 
 type Config struct {
@@ -72,11 +81,13 @@ func (d *Display) Row() (r *Row) {
 }
 
 func (d *Display) Begin() {
+	d.dest.Write([]byte(cursor_hide))
 	go d.renderLoop(d.config.Interval)
 }
 
 func (d *Display) Stop() {
 	close(d.done)
+	d.dest.Write([]byte(cursor_show))
 }
 
 var buffers = sync.Pool{}
@@ -91,10 +102,10 @@ func (d *Display) Render() {
 	}
 
 	if d.height > 0 {
-		buf = append(buf, fmt.Sprintf("\033[%dA", d.height)...)
+		buf = append(buf, fmt.Sprintf(cursor_move_top, d.height)...)
 	}
 	if d.width > 0 {
-		buf = append(buf, fmt.Sprintf("\033[%dD", d.width)...)
+		buf = append(buf, fmt.Sprintf(cursor_move_left, d.width)...)
 	}
 
 	var height, width int
@@ -139,6 +150,8 @@ func (d *Display) Render() {
 
 	d.height = height
 	d.width = width
+
+	//	buf = append(buf, cursor_hide...) // hide
 	io.Copy(d.dest, bytes.NewReader(buf))
 
 	buffers.Put(buf[:0])
