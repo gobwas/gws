@@ -37,7 +37,7 @@ import (
 var (
 	uri        = flag.String("u", ":3000", "websocket url to connect")
 	limit      = flag.Int("retry", 1, "try to reconnect x times")
-	scriptFile = flag.String("s", "", "use lua script to perform action")
+	scriptFile = flag.String("s", "", "use lua script to define client actions")
 	timeout    = flag.String("t", "0", "client script run timeout")
 )
 
