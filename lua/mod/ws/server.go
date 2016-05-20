@@ -21,7 +21,7 @@ type ServerConfig struct {
 	Cert string
 }
 
-func NewServer(l *ev.Loop, c ServerConfig) *Conn {
+func NewServer(l *ev.Loop, c ServerConfig) *Server {
 	return &Server{
 		loop:    l,
 		emitter: mod.NewEmitter(),

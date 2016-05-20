@@ -3,7 +3,6 @@ package ws
 import (
 	"github.com/gobwas/gws/ev"
 	evws "github.com/gobwas/gws/ev/ws"
-	"github.com/gobwas/gws/lua/mod"
 	"github.com/gobwas/gws/ws"
 	"github.com/yuin/gopher-lua"
 	"net/http"
@@ -36,7 +35,7 @@ func (m *Mod) Exports() lua.LGFunction {
 					case "key":
 						cfg.Key = value.String()
 					case "tls":
-						cfg.TLS = strconv.ParseBool(value.String())
+						cfg.TLS, _ = strconv.ParseBool(value.String())
 					}
 				}
 			})

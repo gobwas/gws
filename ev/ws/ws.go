@@ -2,10 +2,8 @@ package ws
 
 import (
 	"fmt"
-	"github.com/gobwas/glob"
 	"github.com/gobwas/gws/ev"
 	"github.com/gobwas/gws/ws"
-	"github.com/gorilla/websocket"
 	"net/http"
 	"sync/atomic"
 )

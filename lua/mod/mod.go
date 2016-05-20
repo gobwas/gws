@@ -104,7 +104,11 @@ func (e *Emitter) ExportOn(L *lua.LState) *lua.LFunction {
 				switch v := arg.(type) {
 				case string:
 					callArgs = append(callArgs, lua.LString(v))
-				case int, uint, float64:
+				case int:
+					callArgs = append(callArgs, lua.LNumber(v))
+				case uint:
+					callArgs = append(callArgs, lua.LNumber(v))
+				case float64:
 					callArgs = append(callArgs, lua.LNumber(v))
 				default:
 					//

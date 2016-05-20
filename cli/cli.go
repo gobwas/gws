@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"github.com/gobwas/gws/cli/color"
 	"strings"
 )
 
