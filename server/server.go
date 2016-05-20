@@ -28,7 +28,7 @@ import (
 var (
 	listen    = flag.String("l", ":3000", "address to listen")
 	origin    = flag.String("o", "", "use this glob pattern for server origin checks")
-	heartbit  = flag.String("dumpstat", "5s", "server statistics dump interval")
+	dumpstat  = flag.String("dumpstat", "5s", "server statistics dump interval")
 	responder = &ResponderFlag{null, []string{echo, mirror, prompt, null}}
 )
 
@@ -49,7 +49,7 @@ func Go() error {
 		return common.UsageError{err}
 	}
 
-	hb, err := time.ParseDuration(*heartbit)
+	d, err := time.ParseDuration(*dumpstat)
 	if err != nil {
 		return common.UsageError{err}
 	}
@@ -71,7 +71,7 @@ func Go() error {
 	handler := newWsHandler(Config{
 		Headers:  h,
 		Origin:   *origin,
-		Heartbit: hb,
+		Dumpstat: d,
 	}, r)
 
 	handler.Init()
@@ -97,7 +97,7 @@ type wsHandler struct {
 type Config struct {
 	Headers  http.Header
 	Origin   string
-	Heartbit time.Duration
+	Dumpstat time.Duration
 }
 
 type connDescriptor struct {
@@ -148,7 +148,7 @@ func (h *wsHandler) Init() {
 					}
 					completer := readline.NewPrefixCompleter(items...)
 
-					r, err := input.Readline(&readline.Config{
+					r, err := input.ReadLine(&readline.Config{
 						Prompt:       color.Green("> ") + "select connection id: ",
 						AutoComplete: completer,
 					})
@@ -169,7 +169,7 @@ func (h *wsHandler) Init() {
 					connId = 1
 				}
 
-				r, err := input.Readline(&readline.Config{
+				r, err := input.ReadLine(&readline.Config{
 					Prompt:      color.Green("> ") + fmt.Sprintf("notification for the connection #%d: ", connId),
 					HistoryFile: "/tmp/gws_readline_server_notice.tmp",
 				})
@@ -189,9 +189,9 @@ func (h *wsHandler) Init() {
 	}()
 
 	go func() {
-		for range time.Tick(h.config.Heartbit) {
+		for range time.Tick(h.config.Dumpstat) {
 			v := atomic.SwapUint64(&h.requests, 0)
-			log.Printf("RPS: (%d) %.2f\n", v, float64(v/uint64(h.config.Heartbit.Seconds())))
+			log.Printf("RPS: (%d) %.2f\n", v, float64(v/uint64(h.config.Dumpstat.Seconds())))
 		}
 	}()
 }

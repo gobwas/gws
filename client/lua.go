@@ -1,0 +1,182 @@
+package client
+
+import (
+	"bytes"
+	"flag"
+	"fmt"
+	"github.com/gobwas/gws/bufio"
+	"github.com/gobwas/gws/cli"
+	"github.com/gobwas/gws/cli/color"
+	"github.com/gobwas/gws/display"
+	"github.com/gobwas/gws/ev"
+	evWS "github.com/gobwas/gws/ev/ws"
+	modRuntime "github.com/gobwas/gws/lua/mod/runtime"
+	modStat "github.com/gobwas/gws/lua/mod/stat"
+	modTime "github.com/gobwas/gws/lua/mod/time"
+	modWS "github.com/gobwas/gws/lua/mod/ws"
+	"github.com/gobwas/gws/lua/script"
+	"github.com/gobwas/gws/stat"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"time"
+)
+
+var scriptFile = flag.String("s", "", "use lua script to define client actions")
+
+func initRunTime(loop *ev.Loop, c config) *modRuntime.Runtime {
+	rtime := modRuntime.New(loop)
+	rtime.Set("url", c.uri.String())
+	rtime.Set("headers", headersToMap(c.headers))
+	return rtime
+}
+
+func headersToMap(h http.Header) map[string]string {
+	m := make(map[string]string)
+	for key := range h {
+		m[key] = h.Get(key)
+	}
+	return m
+}
+
+func GoLua(scriptPath string, c config) error {
+	var code string
+	if script, err := ioutil.ReadFile(scriptPath); err != nil {
+		return err
+	} else {
+		code = string(script)
+	}
+
+	stats := stat.New()
+
+	luaOutputBuffer := bytes.NewBuffer(make([]byte, 0, 1<<13))
+	luaStdout := bufio.NewWriter(luaOutputBuffer, 1<<13)
+
+	systemStdout := bytes.NewBuffer(make([]byte, 0, 1024))
+
+	printer := display.NewDisplay(os.Stderr, display.Config{
+		TabSize:  4,
+		Interval: time.Millisecond * 100,
+	})
+	printer.Row().Col(-1, -1, func() string {
+		return stats.Pretty()
+	})
+	printer.Row().Col(256, 9, func() (str string) {
+		luaStdout.Dump()
+		str = luaOutputBuffer.String()
+		luaOutputBuffer.Reset()
+		return
+	})
+	printer.Row().Col(256, 3, func() (str string) {
+		str = systemStdout.String()
+		return
+	})
+	printer.On()
+	defer printer.Off()
+	defer printer.Render()
+
+	cancel := make(chan struct{})
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt)
+		s := <-c
+		fmt.Fprintln(systemStdout, color.Cyan(cli.PrefixTheEnd), s.String())
+		fmt.Fprintln(systemStdout, color.Cyan("stopping softly.."))
+		close(cancel)
+		s = <-c
+		fmt.Fprintln(systemStdout, color.Red(cli.PrefixTheEnd), color.Yellow(s.String()+"x2"))
+		fmt.Fprintln(systemStdout, color.Red("stopping hardly.."))
+		printer.Off()
+		os.Exit(1)
+	}()
+
+	luaScript := script.New()
+	defer luaScript.Shutdown()
+
+	luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green("master > ")))
+
+	loop := ev.NewLoop()
+	loop.Register(evWS.NewHandler(), 100)
+
+	sharedStat := modStat.New(stats)
+
+	var wg sync.WaitGroup
+	var threads int
+	rtime := initRunTime(loop, c)
+	rtime.SetForkFn(func() error {
+		go func(id int) {
+			defer wg.Done()
+
+			luaScript := script.New()
+			defer luaScript.Shutdown()
+			luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green(fmt.Sprintf("thread %.2d > ", id))))
+
+			loop := ev.NewLoop()
+			loop.Register(evWS.NewHandler(), 100)
+
+			rtime := initRunTime(loop, c)
+			rtime.Set("id", id)
+
+			luaScript.Preload("runtime", rtime)
+			luaScript.Preload("stat", sharedStat)
+			luaScript.Preload("time", modTime.New(loop))
+			luaScript.Preload("ws", modWS.New(loop))
+
+			err := luaScript.Do(code)
+			if err != nil {
+				log.Printf("run forked lua script error: %s", err)
+			}
+
+			loop.Run()
+			loop.Teardown(func() {
+				rtime.Emit("exit")
+			})
+
+			waitLoop(cancel, loop)
+		}(threads)
+
+		wg.Add(1)
+		threads++
+
+		return nil
+	})
+
+	luaScript.Preload("runtime", rtime)
+	luaScript.Preload("stat", sharedStat)
+	luaScript.Preload("time", modTime.New(loop))
+	luaScript.Preload("ws", modWS.New(loop))
+
+	err := luaScript.Do(code)
+	if err != nil {
+		log.Printf("run lua script error: %s", err)
+		return err
+	}
+
+	loop.Run()
+	loop.Teardown(func() {
+		wg.Wait()
+		rtime.Emit("exit")
+	})
+
+	waitLoop(cancel, loop)
+	wg.Wait()
+
+	return nil
+}
+
+func waitLoop(cancel chan struct{}, loop *ev.Loop) {
+	select {
+	case <-loop.Done():
+	case <-cancel:
+		loop.Stop()
+		shutdown := time.NewTimer(time.Second * 4)
+		select {
+		case <-loop.Done():
+		case <-shutdown.C:
+			loop.Shutdown()
+		}
+	}
+}

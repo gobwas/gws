@@ -2,7 +2,7 @@ package timer
 
 import (
 	"errors"
-	"github.com/gobwas/gws/client/ev"
+	"github.com/gobwas/gws/ev"
 	"sync/atomic"
 	"time"
 )

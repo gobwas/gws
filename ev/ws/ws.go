@@ -2,8 +2,10 @@ package ws
 
 import (
 	"fmt"
+	"github.com/gobwas/glob"
 	"github.com/gobwas/gws/ev"
 	"github.com/gobwas/gws/ws"
+	"github.com/gorilla/websocket"
 	"net/http"
 	"sync/atomic"
 )
@@ -33,6 +35,15 @@ type Receive struct {
 	conn *ws.Connection
 }
 
+type Listen struct {
+	TLS     bool
+	Key     string
+	Cert    string
+	Addr    string
+	Origin  string
+	Headers http.Header
+}
+
 func NewReceive(c *ws.Connection) *Receive {
 	return &Receive{
 		conn: c,
@@ -46,6 +57,9 @@ func (h *Handler) Handle(loop *ev.Loop, data interface{}, cb ev.Callback) error 
 
 	case Send:
 		h.doSend(loop, v, cb)
+
+	case Listen:
+		h.doListen(loop, v, cb)
 
 	case *Receive:
 		h.doReceive(loop, v, cb)
@@ -65,8 +79,42 @@ func (h *Handler) IsActive() bool {
 	return atomic.LoadInt32(&h.pending) > 0
 }
 
+func (h *Handler) doListen(loop *ev.Loop, req Listen, cb ev.Callback) {
+	atomic.AddInt32(&h.pending, 1)
+
+	go func() {
+		upgrade := ws.GetUpgrader(ws.UpgradeConfig{
+			Origin:  req.Origin,
+			Headers: req.Headers,
+		})
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if conn, err := upgrade(w, r); err != nil {
+				loop.Call(func() {
+					cb(err, nil)
+				})
+			} else {
+				loop.Call(func() {
+					cb(nil, ws.NewConnection(conn))
+				})
+			}
+		})
+
+		var err error
+		if req.TLS {
+			err = http.ListenAndServeTLS(req.Addr, req.Cert, req.Key, handler)
+		} else {
+			err = http.ListenAndServe(req.Addr, handler)
+		}
+
+		cb(err, nil)
+		atomic.AddInt32(&h.pending, -1)
+	}()
+}
+
 func (h *Handler) doConnect(loop *ev.Loop, req Connect, cb ev.Callback) {
 	atomic.AddInt32(&h.pending, 1)
+
 	// todo use here pool of workers
 	go func() {
 		conn, _, err := ws.GetConn(req.Url, req.Headers)

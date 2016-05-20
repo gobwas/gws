@@ -1,3 +1,4 @@
+// Package display brings tools for multiscreen output.
 package display
 
 import (
@@ -15,6 +16,12 @@ const (
 	cursor_move_left = "\033[%dD"
 )
 
+var (
+	space = []byte{' '}
+	tab   = []byte{'\t'}
+	newl  = []byte{'\n'}
+)
+
 type ContentFn func() string
 
 type Column struct {
@@ -28,6 +35,7 @@ type Row struct {
 	columns []Column
 }
 
+// Column adds new column for given row.
 func (r *Row) Column(z Column) *Row {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -35,6 +43,7 @@ func (r *Row) Column(z Column) *Row {
 	return r
 }
 
+// Col is the same as Column, but avoids creation of struct Columng by a client.
 func (r *Row) Col(width, height int, c ContentFn) *Row {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -42,13 +51,16 @@ func (r *Row) Col(width, height int, c ContentFn) *Row {
 	return r
 }
 
+// Config contains fields for display configuration.
 type Config struct {
-	TabSize  int
-	Interval time.Duration
+	TabSize  int           // how big in spaces should be '\t' characters
+	Interval time.Duration // interval for re-render output
 }
 
+// Display represents multiscreen display.
 type Display struct {
 	mu     sync.Mutex
+	buf    []byte
 	dest   io.Writer
 	index  int64
 	height int
@@ -58,6 +70,7 @@ type Display struct {
 	config Config
 }
 
+// NewDisplay creates new multiscreen display that renders to w.
 func NewDisplay(w io.Writer, c Config) *Display {
 	if c.TabSize == 0 {
 		c.TabSize = 4
@@ -72,6 +85,7 @@ func NewDisplay(w io.Writer, c Config) *Display {
 	}
 }
 
+// Row creates new row in display.
 func (d *Display) Row() (r *Row) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -80,32 +94,29 @@ func (d *Display) Row() (r *Row) {
 	return
 }
 
-func (d *Display) Begin() {
+// On starts the rendering loop of display contents.
+func (d *Display) On() {
 	d.dest.Write([]byte(cursor_hide))
 	go d.renderLoop(d.config.Interval)
 }
 
-func (d *Display) Stop() {
+// Off stops the rendering loop.
+func (d *Display) Off() {
 	close(d.done)
 	d.dest.Write([]byte(cursor_show))
 }
 
-var buffers = sync.Pool{}
-
+// Render renders all rows and columns registered in this Display.
 func (d *Display) Render() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	var buf []byte
-	if b := buffers.Get(); b != nil {
-		buf = b.([]byte)
-	}
-
+	// clear previously rendered data
 	if d.height > 0 {
-		buf = append(buf, fmt.Sprintf(cursor_move_top, d.height)...)
+		d.buf = append(d.buf, fmt.Sprintf(cursor_move_top, d.height)...)
 	}
 	if d.width > 0 {
-		buf = append(buf, fmt.Sprintf(cursor_move_left, d.width)...)
+		d.buf = append(d.buf, fmt.Sprintf(cursor_move_left, d.width)...)
 	}
 
 	var height, width int
@@ -113,17 +124,20 @@ func (d *Display) Render() {
 		var rowLines [][]byte
 
 		var currentPadding int
-		for _, zone := range row.columns {
-			data := []byte(zone.Content())
-			data = bytes.Replace(data, []byte{'\t'}, bytes.Repeat([]byte{' '}, d.config.TabSize), -1)
+		for _, col := range row.columns {
+			data := []byte(col.Content())
+			data = bytes.Replace(data, tab, bytes.Repeat(space, d.config.TabSize), -1)
 
-			lines := fitLinesWidth(data, zone.Width)
-			if zone.Height > 0 {
-				if len(lines) > zone.Height {
-					lines = lines[len(lines)-zone.Height:]
+			lines := splitToLines(data, col.Width)
+			if col.Height > 0 {
+				if len(lines) > col.Height {
+					// drop stale lines and keep only those that fits into column height
+					lines = lines[len(lines)-col.Height:]
 				} else {
-					for i := 0; i < zone.Height-len(lines); i++ {
-						lines = append(lines, repeat(' ', zone.Width))
+					// if we have not reached the height of column
+					// then fill it with empty lines
+					for i := 0; i < col.Height-len(lines); i++ {
+						lines = append(lines, repeat(' ', col.Width))
 					}
 				}
 			}
@@ -131,10 +145,13 @@ func (d *Display) Render() {
 			var maxPad int
 			for i, ln := range lines {
 				if i == len(rowLines) {
+					// if previous column did not filled current line
+					// fill it with spaces
 					rowLines = append(rowLines, repeat(' ', currentPadding))
+					height++
 				}
 
-				rowLines[i] = append(rowLines[i], ' ')
+				rowLines[i] = append(rowLines[i], ' ') // write column delimiter
 				rowLines[i] = append(rowLines[i], ln...)
 
 				width = max(len(rowLines[i]), width)
@@ -143,18 +160,15 @@ func (d *Display) Render() {
 			currentPadding = maxPad
 		}
 
-		buf = append(buf, bytes.Join(rowLines, []byte{'\n'})...)
-		buf = append(buf, '\n')
-		height += len(rowLines)
+		d.buf = append(d.buf, bytes.Join(rowLines, newl)...)
+		d.buf = append(d.buf, '\n')
 	}
 
 	d.height = height
 	d.width = width
 
-	//	buf = append(buf, cursor_hide...) // hide
-	io.Copy(d.dest, bytes.NewReader(buf))
-
-	buffers.Put(buf[:0])
+	io.Copy(d.dest, bytes.NewReader(d.buf))
+	d.buf = d.buf[:0]
 }
 
 func (d *Display) renderLoop(duration time.Duration) {
@@ -169,7 +183,9 @@ func (d *Display) renderLoop(duration time.Duration) {
 	}
 }
 
-func fitLinesWidth(data []byte, width int) (lines [][]byte) {
+// splitToLines splits given data by '\n' character if number of read characters is higher than width
+// if it has met '\n' before maximum width has reached, it pads remaining bytes with space.
+func splitToLines(data []byte, width int) (lines [][]byte) {
 	var pad int
 	for i, w := 0, 0; i < len(data); i, w = i+1, w+1 {
 		lineBreak := data[i] == '\n'

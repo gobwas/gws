@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"github.com/gobwas/glob"
 	"github.com/gorilla/websocket"
 	"io"
 	"io/ioutil"
@@ -8,6 +9,8 @@ import (
 )
 
 type Kind int
+
+const HeaderOrigin = "Origin"
 
 const (
 	TextMessage   = 1
@@ -168,4 +171,23 @@ func GetConn(uri string, h http.Header) (conn *websocket.Conn, resp *http.Respon
 	dialer := &websocket.Dialer{}
 	conn, resp, err = dialer.Dial(uri, h)
 	return
+}
+
+type UpgradeConfig struct {
+	Origin  string
+	Headers http.Header
+}
+
+func GetUpgrader(config UpgradeConfig) func(http.ResponseWriter, *http.Request) (*websocket.Conn, *error) {
+	u := &websocket.Upgrader{}
+	if config.Origin != "" {
+		originChecker := glob.MustCompile(config.Origin)
+		u.CheckOrigin = func(r *http.Request) bool {
+			return originChecker.Match(r.Header.Get(HeaderOrigin))
+		}
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) (*websocket.Conn, *error) {
+		return u.Upgrade(w, r, config.Headers)
+	}
 }

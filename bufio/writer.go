@@ -1,7 +1,10 @@
+// Package bufio brings tools for io.
+// It extends standard bufio package with prefixed writer and ring buffer.
 package bufio
 
 import "io"
 
+// PrefixWriter adds prefix to every write call.
 type PrefixWriter struct {
 	dest   io.Writer
 	prefix string
@@ -11,6 +14,7 @@ func NewPrefixWriter(dest io.Writer, prefix string) *PrefixWriter {
 	return &PrefixWriter{dest, prefix}
 }
 
+// Write writes p into underlying writer with prefix.
 func (w PrefixWriter) Write(p []byte) (int, error) {
 	ret := make([]byte, len(p)+len(w.prefix))
 	ret = append(ret, w.prefix...)
@@ -18,29 +22,36 @@ func (w PrefixWriter) Write(p []byte) (int, error) {
 	return w.dest.Write(ret)
 }
 
-type Writer struct {
+// RingBufferWriter implements ring buffer for io operations.
+type RingBufferWriter struct {
 	ring *ring
 	dest io.Writer
 }
 
-func NewWriter(dest io.Writer, size int) *Writer {
-	return &Writer{
+func NewWriter(dest io.Writer, size int) *RingBufferWriter {
+	return &RingBufferWriter{
 		dest: dest,
 		ring: newRing(size),
 	}
 }
 
-func (w *Writer) Write(p []byte) (int, error) {
+// Write writes p to the underlying circular buffer.
+// It returns len(p) and optional error.
+func (w *RingBufferWriter) Write(p []byte) (int, error) {
 	w.ring.append(p...)
 	return len(p), nil
 }
 
-func (w *Writer) Flush() (err error) {
+// Flush dumps contents of circular buffer into the underlying io.Writer.
+// Flush is the same as Dump, except the thing, that flush drops buffer contents.
+func (w *RingBufferWriter) Flush() (err error) {
 	_, err = w.dest.Write(w.ring.flush())
 	return
 }
 
-func (w *Writer) Dump() (err error) {
+// Dump dumps contents of circular buffer into the underlying io.Writer.
+// Dump do not drops buffer contents.
+func (w *RingBufferWriter) Dump() (err error) {
 	_, err = w.dest.Write(w.ring.dump())
 	return
 }

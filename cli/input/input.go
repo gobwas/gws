@@ -13,14 +13,7 @@ type Message struct {
 	Data []byte
 }
 
-func writeMessageNonBlocking(ch chan<- Message, m Message) {
-	select {
-	case ch <- m:
-	default:
-	}
-}
-
-func Readline(cfg *readline.Config) (r []byte, err error) {
+func ReadLine(cfg *readline.Config) (r []byte, err error) {
 	rl, err := readline.NewEx(cfg)
 	if err != nil {
 		return
@@ -35,13 +28,10 @@ func Readline(cfg *readline.Config) (r []byte, err error) {
 	return []byte(line), nil
 }
 
-func ReadFromStdReadline(done <-chan struct{}) (<-chan Message, error) {
+func ReadLineAsync(done <-chan struct{}, cfg *readline.Config) (<-chan Message, error) {
 	ch := make(chan Message)
 
-	rl, err := readline.NewEx(&readline.Config{
-		Prompt:      cli.PaddingLeft + "> ",
-		HistoryFile: "/tmp/gws_readline_client.tmp",
-	})
+	rl, err := readline.NewEx(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -68,35 +58,6 @@ func ReadFromStdReadline(done <-chan struct{}) (<-chan Message, error) {
 				ch <- msg
 				if msg.Err != nil {
 					rl.Close()
-					return
-				}
-			}
-		}
-	}()
-
-	return ch, nil
-}
-
-func ReadFromStd(done <-chan struct{}) (<-chan Message, error) {
-	ch := make(chan Message)
-	reader := bufio.NewReader(os.Stdin)
-
-	go func() {
-		for {
-			var msg Message
-			b, err := reader.ReadBytes('\n')
-			if err != nil {
-				msg = Message{Err: err}
-			} else {
-				msg = Message{Data: b[:len(b)-1]}
-			}
-
-			select {
-			case <-done:
-			//
-			default:
-				ch <- msg
-				if msg.Err != nil {
 					return
 				}
 			}
