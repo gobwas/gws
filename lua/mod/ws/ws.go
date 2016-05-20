@@ -24,21 +24,21 @@ func (m *Mod) Exports() lua.LGFunction {
 		mod := L.NewTable()
 
 		mod.RawSetString("createServer", L.NewClosure(func(L *lua.LState) int {
-			opts := L.ToTable(1)
-
 			var cfg ServerConfig
-			opts.ForEach(func(key lua.LValue, value lua.LValue) {
-				if key.Type() == lua.LTString {
-					switch key.String() {
-					case "cert":
-						cfg.Cert = value.String()
-					case "key":
-						cfg.Key = value.String()
-					case "tls":
-						cfg.TLS, _ = strconv.ParseBool(value.String())
+			if opts := L.ToTable(1); opts != nil {
+				opts.ForEach(func(key lua.LValue, value lua.LValue) {
+					if key.Type() == lua.LTString {
+						switch key.String() {
+						case "cert":
+							cfg.Cert = value.String()
+						case "key":
+							cfg.Key = value.String()
+						case "tls":
+							cfg.TLS, _ = strconv.ParseBool(value.String())
+						}
 					}
-				}
-			})
+				})
+			}
 
 			server := NewServer(m.loop, cfg)
 			L.Push(server.ToTable(L))

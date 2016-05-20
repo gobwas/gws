@@ -79,10 +79,15 @@ func (s *Server) ToTable(L *lua.LState) *lua.LTable {
 		if e != nil { // sync error
 			L.Push(lua.LString(e.Error()))
 			return 1
+		} else {
+			s.Emit("listening")
 		}
 
 		return 0
 	}))
+
+	table.RawSetString("on", s.emitter.ExportOn(L))
+	table.RawSetString("off", s.emitter.ExportOff(L))
 
 	return table
 }

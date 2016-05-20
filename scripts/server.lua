@@ -16,8 +16,18 @@ if runtime.isMaster() then
         stat.add("duration", time.now(time.ms) - start)
     end)
 else
-    local server = ws.createServer({ tls = false })
+    local server = ws.createServer()
+
     server.listen(":8083", function(conn)
+        print("got conn")
         conn.send("hi there")
+    end)
+
+    server.on("error", function(err)
+        print("error: ", err)
+    end)
+
+    server.on("listening", function()
+        print("listening")
     end)
 end
