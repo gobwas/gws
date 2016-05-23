@@ -3,10 +3,10 @@ package ws
 import (
 	"github.com/gobwas/gws/ev"
 	evws "github.com/gobwas/gws/ev/ws"
+	luautil "github.com/gobwas/gws/lua/util"
 	"github.com/gobwas/gws/ws"
 	"github.com/yuin/gopher-lua"
 	"net/http"
-	"strconv"
 )
 
 type Mod struct {
@@ -24,7 +24,7 @@ func (m *Mod) Exports() lua.LGFunction {
 		mod := L.NewTable()
 
 		mod.RawSetString("createServer", L.NewClosure(func(L *lua.LState) int {
-			var cfg ServerConfig
+			var cfg ws.ServerConfig
 			if opts := L.ToTable(1); opts != nil {
 				opts.ForEach(func(key lua.LValue, value lua.LValue) {
 					if key.Type() == lua.LTString {
@@ -33,8 +33,13 @@ func (m *Mod) Exports() lua.LGFunction {
 							cfg.Cert = value.String()
 						case "key":
 							cfg.Key = value.String()
-						case "tls":
-							cfg.TLS, _ = strconv.ParseBool(value.String())
+						case "origin":
+							cfg.Origin = value.String()
+						case "headers":
+							t, ok := value.(*lua.LTable)
+							if ok {
+								cfg.Headers = luautil.HeadersFromTable(t)
+							}
 						}
 					}
 				})

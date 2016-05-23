@@ -178,7 +178,9 @@ type UpgradeConfig struct {
 	Headers http.Header
 }
 
-func GetUpgrader(config UpgradeConfig) func(http.ResponseWriter, *http.Request) (*websocket.Conn, error) {
+type Upgrader func(http.ResponseWriter, *http.Request) (*websocket.Conn, error)
+
+func GetUpgrader(config UpgradeConfig) Upgrader {
 	u := &websocket.Upgrader{}
 	if config.Origin != "" {
 		originChecker := glob.MustCompile(config.Origin)

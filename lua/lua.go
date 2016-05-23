@@ -1,4 +1,4 @@
-package client
+package lua
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"github.com/gobwas/gws/bufio"
 	"github.com/gobwas/gws/cli"
 	"github.com/gobwas/gws/cli/color"
+	"github.com/gobwas/gws/config"
 	"github.com/gobwas/gws/display"
 	"github.com/gobwas/gws/ev"
 	evWS "github.com/gobwas/gws/ev/ws"
@@ -15,36 +16,29 @@ import (
 	modTime "github.com/gobwas/gws/lua/mod/time"
 	modWS "github.com/gobwas/gws/lua/mod/ws"
 	"github.com/gobwas/gws/lua/script"
+	"github.com/gobwas/gws/lua/util"
 	"github.com/gobwas/gws/stat"
 	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"time"
 )
 
-var scriptFile = flag.String("s", "", "use lua script to define client actions")
+var scriptFile = flag.String("path", "", "use lua script to define client actions")
 
-func initRunTime(loop *ev.Loop, c config) *modRuntime.Runtime {
+func initRunTime(loop *ev.Loop, c config.Config) *modRuntime.Runtime {
 	rtime := modRuntime.New(loop)
-	rtime.Set("url", c.uri.String())
-	rtime.Set("headers", headersToMap(c.headers))
+	rtime.Set("url", c.URI)
+	rtime.Set("listen", c.Addr)
+	rtime.Set("headers", util.HeadersToMap(c.Headers))
 	return rtime
 }
 
-func headersToMap(h http.Header) map[string]string {
-	m := make(map[string]string)
-	for key := range h {
-		m[key] = h.Get(key)
-	}
-	return m
-}
-
-func GoLua(scriptPath string, c config) error {
+func Go(c config.Config) error {
 	var code string
-	if script, err := ioutil.ReadFile(scriptPath); err != nil {
+	if script, err := ioutil.ReadFile(*scriptFile); err != nil {
 		return err
 	} else {
 		code = string(script)
@@ -64,7 +58,7 @@ func GoLua(scriptPath string, c config) error {
 	printer.Row().Col(-1, -1, func() string {
 		return stats.Pretty()
 	})
-	printer.Row().Col(256, 9, func() (str string) {
+	printer.Row().Col(256, 10, func() (str string) {
 		luaStdout.Dump()
 		str = luaOutputBuffer.String()
 		luaOutputBuffer.Reset()
@@ -99,7 +93,10 @@ func GoLua(scriptPath string, c config) error {
 	luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green("master > ")))
 
 	loop := ev.NewLoop()
-	loop.Register(evWS.NewHandler(), 100)
+
+	loopServerHandler := evWS.NewServerHandler()
+	loop.Register(evWS.NewClientHandler(), 100)
+	loop.Register(loopServerHandler, 101)
 
 	sharedStat := modStat.New(stats)
 
@@ -115,7 +112,8 @@ func GoLua(scriptPath string, c config) error {
 			luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green(fmt.Sprintf("thread %.2d > ", id))))
 
 			loop := ev.NewLoop()
-			loop.Register(evWS.NewHandler(), 100)
+			loop.Register(evWS.NewClientHandler(), 100)
+			loop.Register(loopServerHandler, 101)
 
 			rtime := initRunTime(loop, c)
 			rtime.Set("id", id)

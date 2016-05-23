@@ -2,7 +2,7 @@ package input
 
 import (
 	"github.com/chzyer/readline"
-	"github.com/gobwas/gws/common"
+	"io"
 )
 
 type Message struct {
@@ -39,7 +39,7 @@ func ReadLineAsync(done <-chan struct{}, cfg *readline.Config) (<-chan Message, 
 			line, err := rl.Readline()
 			if err != nil {
 				if err == readline.ErrInterrupt {
-					msg = Message{Err: common.ErrExitZero}
+					msg = Message{Err: io.EOF}
 				} else {
 					msg = Message{Err: err}
 				}
