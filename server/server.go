@@ -5,11 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"github.com/chzyer/readline"
-	"github.com/gobwas/glob"
 	"github.com/gobwas/gws/cli/color"
 	"github.com/gobwas/gws/cli/input"
-	"github.com/gobwas/gws/common"
-	"github.com/gobwas/gws/util/headers"
+	"github.com/gobwas/gws/config"
 	"github.com/gobwas/gws/ws"
 	"github.com/gorilla/websocket"
 	"io"
@@ -26,9 +24,7 @@ import (
 )
 
 var (
-	listen    = flag.String("l", ":3000", "address to listen")
-	origin    = flag.String("o", "", "use this glob pattern for server origin checks")
-	heartbit  = flag.String("dumpstat", "5s", "server statistics dump interval")
+	origin    = flag.String("origin", "", "use this glob pattern for server origin checks")
 	responder = &ResponderFlag{null, []string{echo, mirror, prompt, null}}
 )
 
@@ -43,17 +39,7 @@ const (
 	null   = "null"
 )
 
-func Go() error {
-	h, err := headers.Parse(common.Headers)
-	if err != nil {
-		return common.UsageError{err}
-	}
-
-	hb, err := time.ParseDuration(*heartbit)
-	if err != nil {
-		return common.UsageError{err}
-	}
-
+func Go(c config.Config) error {
 	var r Responder
 	switch responder.Get() {
 	case echo:
@@ -68,22 +54,25 @@ func Go() error {
 		return errors.New("unknown responder type")
 	}
 
-	handler := newWsHandler(Config{
-		Headers:  h,
+	handler, err := newWsHandler(Config{
+		Headers:  c.Headers,
 		Origin:   *origin,
-		Heartbit: hb,
+		StatDump: c.StatDump,
 	}, r)
+	if err != nil {
+		return err
+	}
 
 	handler.Init()
 
-	log.Println("ready to listen", *listen)
-	return http.ListenAndServe(*listen, handler)
+	log.Println("ready to listen", c.Addr)
+	return http.ListenAndServe(c.Addr, handler)
 }
 
 type wsHandler struct {
 	mu sync.Mutex
 
-	upgrader   websocket.Upgrader
+	upgrader   ws.Upgrader
 	config     Config
 	responder  Responder
 	sig        chan os.Signal
@@ -97,7 +86,7 @@ type wsHandler struct {
 type Config struct {
 	Headers  http.Header
 	Origin   string
-	Heartbit time.Duration
+	StatDump time.Duration
 }
 
 type connDescriptor struct {
@@ -110,23 +99,14 @@ const headerOrigin = "Origin"
 
 type Responder func(ws.Kind, []byte) ([]byte, error)
 
-func newWsHandler(c Config, r Responder) *wsHandler {
-	u := websocket.Upgrader{}
-
-	if c.Origin != "" {
-		originChecker := glob.MustCompile(c.Origin)
-		u.CheckOrigin = func(r *http.Request) bool {
-			return originChecker.Match(r.Header.Get(headerOrigin))
-		}
-	}
-
+func newWsHandler(c Config, r Responder) (*wsHandler, error) {
 	return &wsHandler{
-		upgrader:  u,
+		upgrader:  ws.GetUpgrader(ws.UpgradeConfig{c.Origin, c.Headers}),
 		config:    c,
 		responder: r,
 		sig:       make(chan os.Signal, 1),
 		conns:     make(map[uint64]connDescriptor),
-	}
+	}, nil
 }
 
 func (h *wsHandler) Init() {
@@ -148,7 +128,7 @@ func (h *wsHandler) Init() {
 					}
 					completer := readline.NewPrefixCompleter(items...)
 
-					r, err := input.Readline(&readline.Config{
+					r, err := input.ReadLine(&readline.Config{
 						Prompt:       color.Green("> ") + "select connection id: ",
 						AutoComplete: completer,
 					})
@@ -169,7 +149,7 @@ func (h *wsHandler) Init() {
 					connId = 1
 				}
 
-				r, err := input.Readline(&readline.Config{
+				r, err := input.ReadLine(&readline.Config{
 					Prompt:      color.Green("> ") + fmt.Sprintf("notification for the connection #%d: ", connId),
 					HistoryFile: "/tmp/gws_readline_server_notice.tmp",
 				})
@@ -189,15 +169,15 @@ func (h *wsHandler) Init() {
 	}()
 
 	go func() {
-		for range time.Tick(h.config.Heartbit) {
+		for range time.Tick(h.config.StatDump) {
 			v := atomic.SwapUint64(&h.requests, 0)
-			log.Printf("RPS: (%d) %.2f\n", v, float64(v/uint64(h.config.Heartbit.Seconds())))
+			log.Printf("RPS: (%d) %.2f\n", v, float64(v/uint64(h.config.StatDump.Seconds())))
 		}
 	}()
 }
 
 func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if common.Verbose {
+	if config.Verbose {
 		req, err := httputil.DumpRequest(r, false)
 		if err != nil {
 			log.Println(err)
@@ -208,7 +188,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// take lock on read new connection
 	h.mu.Lock()
-	conn, err := h.upgrader.Upgrade(w, r, h.config.Headers)
+	conn, err := h.upgrader(w, r)
 	if err != nil {
 		log.Println(err)
 		h.mu.Unlock()
@@ -230,13 +210,13 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.connsCount--
 		h.mu.Unlock()
 
-		if common.Verbose {
+		if config.Verbose {
 			log.Printf("connection #%d closed\n", id)
 		}
 	}()
 	h.mu.Unlock()
 
-	if common.Verbose {
+	if config.Verbose {
 		log.Printf("establised connection #%d from %q\n", id, r.RemoteAddr)
 	}
 
@@ -265,7 +245,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 				return
 			}
-			if common.Verbose {
+			if config.Verbose {
 				log.Printf("received message from %d: %s\n", id, string(msg.Data))
 			}
 
@@ -284,7 +264,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				if common.Verbose {
+				if config.Verbose {
 					log.Printf("sent message to %d: %s\n", id, string(resp))
 				}
 			}

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"github.com/gobwas/gws/cli/color"
 	"strings"
 )
 
@@ -48,8 +47,4 @@ func Printf(prefix prefix, format string, c ...interface{}) {
 	}
 
 	fmt.Printf("\r%s%s %s%s", padLeft, prefix, fmt.Sprintf(format, c...), end)
-}
-
-func Error(err error) {
-	fmt.Println(color.Red(err.Error()))
 }

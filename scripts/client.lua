@@ -25,7 +25,6 @@ if runtime.isMaster() then
     end)
 else
     local function send(conn)
-
         conn.send("hello", function(err)
             if (err ~= nil) then
                 stat.add("err", 1)

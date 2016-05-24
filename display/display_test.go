@@ -59,6 +59,6 @@ func TestDisplay(t *testing.T) {
 			return strings.Join(multilineB, "\n")
 		},
 	})
-	d.Begin()
+	d.On()
 	time.Sleep(time.Minute)
 }

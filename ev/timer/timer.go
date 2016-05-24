@@ -2,7 +2,7 @@ package timer
 
 import (
 	"errors"
-	"github.com/gobwas/gws/client/ev"
+	"github.com/gobwas/gws/ev"
 	"sync/atomic"
 	"time"
 )
@@ -74,7 +74,7 @@ func (h *Handler) Handle(loop *ev.Loop, data interface{}, cb ev.Callback) error 
 	return nil
 }
 
-func (h *Handler) IsActive() bool {
+func (h *Handler) IsActive(loop *ev.Loop) bool {
 	return atomic.LoadInt32(&h.count) > 0
 }
 

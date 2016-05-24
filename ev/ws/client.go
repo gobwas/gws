@@ -5,19 +5,9 @@ import (
 	"github.com/gobwas/gws/ev"
 	"github.com/gobwas/gws/ws"
 	"net/http"
+	"sync"
 	"sync/atomic"
 )
-
-type Handler struct {
-	pending int32
-	stop    chan struct{}
-}
-
-func NewHandler() *Handler {
-	return &Handler{
-		stop: make(chan struct{}),
-	}
-}
 
 type Connect struct {
 	Url     string
@@ -39,7 +29,27 @@ func NewReceive(c *ws.Connection) *Receive {
 	}
 }
 
-func (h *Handler) Handle(loop *ev.Loop, data interface{}, cb ev.Callback) error {
+type ClientHandler struct {
+	mu      sync.Mutex
+	pending int32
+	loops   int32
+	stop    chan struct{}
+}
+
+func NewClientHandler() *ClientHandler {
+	return &ClientHandler{
+		stop: make(chan struct{}),
+	}
+}
+
+func (h *ClientHandler) Init(*ev.Loop) error {
+	if atomic.SwapInt32(&h.loops, 1) >= 1 {
+		return fmt.Errorf("ws handler could be registered only in one loop")
+	}
+	return nil
+}
+
+func (h *ClientHandler) Handle(loop *ev.Loop, data interface{}, cb ev.Callback) error {
 	switch v := data.(type) {
 	case Connect:
 		h.doConnect(loop, v, cb)
@@ -57,17 +67,16 @@ func (h *Handler) Handle(loop *ev.Loop, data interface{}, cb ev.Callback) error 
 	return nil
 }
 
-func (h *Handler) Stop() {
+func (h *ClientHandler) Stop() {
 	close(h.stop)
 }
 
-func (h *Handler) IsActive() bool {
+func (h *ClientHandler) IsActive(loop *ev.Loop) bool {
 	return atomic.LoadInt32(&h.pending) > 0
 }
 
-func (h *Handler) doConnect(loop *ev.Loop, req Connect, cb ev.Callback) {
+func (h *ClientHandler) doConnect(loop *ev.Loop, req Connect, cb ev.Callback) {
 	atomic.AddInt32(&h.pending, 1)
-	// todo use here pool of workers
 	go func() {
 		conn, _, err := ws.GetConn(req.Url, req.Headers)
 		if err != nil {
@@ -83,9 +92,8 @@ func (h *Handler) doConnect(loop *ev.Loop, req Connect, cb ev.Callback) {
 	}()
 }
 
-func (h *Handler) doSend(loop *ev.Loop, req Send, cb ev.Callback) {
+func (h *ClientHandler) doSend(loop *ev.Loop, req Send, cb ev.Callback) {
 	atomic.AddInt32(&h.pending, 1)
-	// todo use here pool of workers
 	go func() {
 		err := req.Conn.Send(req.Message)
 		if err != nil {
@@ -101,12 +109,10 @@ func (h *Handler) doSend(loop *ev.Loop, req Send, cb ev.Callback) {
 	}()
 }
 
-func (h *Handler) doReceive(loop *ev.Loop, req *Receive, cb ev.Callback) {
+func (h *ClientHandler) doReceive(loop *ev.Loop, req *Receive, cb ev.Callback) {
 	atomic.AddInt32(&h.pending, 1)
-	// todo use here pool of workers
 	go func() {
 		defer atomic.AddInt32(&h.pending, -1)
-
 		for {
 			select {
 			case <-h.stop:

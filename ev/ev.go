@@ -10,8 +10,9 @@ type RequestType int
 type Callback func(error, interface{})
 
 type Handler interface {
+	Init(*Loop) error
 	Handle(*Loop, interface{}, Callback) error
-	IsActive() bool
+	IsActive(*Loop) bool
 	Stop()
 }
 
@@ -41,9 +42,11 @@ func NewLoop() *Loop {
 	}
 }
 
-// todo use priority
 func (l *Loop) Register(h Handler, t RequestType) {
 	l.handlers[t] = append(l.handlers[t], h)
+	if err := h.Init(l); err != nil {
+		panic(err)
+	}
 }
 
 func (l *Loop) Request(t RequestType, data interface{}, cb Callback) error {
@@ -174,7 +177,7 @@ func (l *Loop) IsAlive() bool {
 
 	for _, handlers := range l.handlers {
 		for _, handler := range handlers {
-			if handler.IsActive() {
+			if handler.IsActive(l) {
 				return true
 			}
 		}
@@ -320,11 +323,6 @@ func (l *Loop) nextRequest() {
 
 	l.mu.Unlock()
 
-	// unlock event here allows handler to act in synchronous way,
-	// e.g. it could call evt.Callback() immediately.
-	// after loop is done, eve.lock() guarantee that possible result of request
-	// will be called only through loop.Request()
-	//	evt.unlock()
 	{
 		for _, handler := range l.handlers[evt.t] {
 			err := handler.Handle(l, evt.data, evt.cb)
@@ -333,7 +331,6 @@ func (l *Loop) nextRequest() {
 			}
 		}
 	}
-	//	evt.lock()
 }
 
 type event func()

@@ -29,7 +29,7 @@ func MirrorResponder(t ws.Kind, msg []byte) (r []byte, err error) {
 }
 
 func PromptResponder(t ws.Kind, msg []byte) (r []byte, err error) {
-	r, err = input.Readline(&readline.Config{
+	r, err = input.ReadLine(&readline.Config{
 		Prompt:      color.Green("> "),
 		HistoryFile: "/tmp/gws_readline_server.tmp",
 	})

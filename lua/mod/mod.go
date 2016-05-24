@@ -98,12 +98,27 @@ func (e *Emitter) ExportOn(L *lua.LState) *lua.LFunction {
 	return L.NewClosure(func(L *lua.LState) int {
 		name := L.ToString(1)
 		cb := L.ToFunction(2)
-		e.registry[desc{name, cb}] = e.On(name, func(...interface{}) {
+		e.registry[desc{name, cb}] = e.On(name, func(args ...interface{}) {
+			var callArgs []lua.LValue
+			for _, arg := range args {
+				switch v := arg.(type) {
+				case string:
+					callArgs = append(callArgs, lua.LString(v))
+				case int:
+					callArgs = append(callArgs, lua.LNumber(v))
+				case uint:
+					callArgs = append(callArgs, lua.LNumber(v))
+				case float64:
+					callArgs = append(callArgs, lua.LNumber(v))
+				default:
+					//
+				}
+			}
 			L.CallByParam(lua.P{
 				Fn:      cb,
 				NRet:    0,
 				Protect: false,
-			})
+			}, callArgs...)
 		})
 		return 0
 	})
