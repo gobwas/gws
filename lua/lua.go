@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-var scriptFile = flag.String("path", "", "use lua script to define client actions")
+var scriptFile = flag.String("path", "", "path to lua script")
 
 func initRunTime(loop *ev.Loop, c config.Config) *modRuntime.Runtime {
 	rtime := modRuntime.New(loop)

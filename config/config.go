@@ -25,7 +25,7 @@ func init() {
 	flag.StringVar(&Headers, "headers", "", fmt.Sprintf("list of headers to be passed during handshake (both in client or server)\n\tformat:\n\t\t{ pair[ %q pair...] },\n\tpair:\n\t\t{ key %q value }", headers.Separator, headers.AssignmentOperator))
 	flag.StringVar(&Addr, "listen", ":3000", "address to listen")
 	flag.StringVar(&URI, "url", ":3000", "address to connect")
-	flag.DurationVar(&Stat, "statd", time.Second, "stat dump interval")
+	flag.DurationVar(&Stat, "statd", time.Second, "server statistics dump interval")
 }
 
 const headerOrigin = "Origin"
