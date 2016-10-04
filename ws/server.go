@@ -113,6 +113,7 @@ func (ln *tcpStoppableListener) Accept() (c net.Conn, err error) {
 		ln.SetDeadline(time.Now().Add(time.Second))
 		select {
 		case <-ln.stop:
+			ln.Close()
 			return nil, fmt.Errorf("listener has been stopped!")
 
 		default:

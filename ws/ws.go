@@ -1,12 +1,16 @@
 package ws
 
 import (
+	"crypto/tls"
+	"flag"
 	"github.com/gobwas/glob"
 	"github.com/gorilla/websocket"
 	"io"
 	"io/ioutil"
 	"net/http"
 )
+
+var insecure = flag.Bool("insecure", false, "do not check tls certificate during dialing")
 
 type Kind int
 
@@ -169,6 +173,11 @@ func ReadAsyncFromConn(done <-chan struct{}, conn *websocket.Conn) <-chan Messag
 
 func GetConn(uri string, h http.Header) (conn *websocket.Conn, resp *http.Response, err error) {
 	dialer := &websocket.Dialer{}
+	if *insecure {
+		dialer.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+		}
+	}
 	conn, resp, err = dialer.Dial(uri, h)
 	return
 }
