@@ -13,19 +13,44 @@ import (
 )
 
 var Verbose bool
-var Headers string
+var HeaderList *headerList
 var Addr string
 var URI string
 var Stat time.Duration
 
 func init() {
+	HeaderList = newHeaderList()
 	// BoolVar and StringVar are used here just for reading them
 	// from other packages with pure common.{Verbose|Headers} (without *)
 	flag.BoolVar(&Verbose, "verbose", false, "verbose output")
-	flag.StringVar(&Headers, "headers", "", fmt.Sprintf("list of headers to be passed during handshake (both in client or server)\n\tformat:\n\t\t{ pair[ %q pair...] },\n\tpair:\n\t\t{ key %q value }", headers.Separator, headers.AssignmentOperator))
 	flag.StringVar(&Addr, "listen", ":3000", "address to listen")
 	flag.StringVar(&URI, "url", ":3000", "address to connect")
 	flag.DurationVar(&Stat, "statd", time.Second, "server statistics dump interval")
+	flag.Var(HeaderList, "header", fmt.Sprintf("allows to specify list of headers to be passed during handshake (both in client or server)\n\tformat:\n\t\t{ key %s value }", headers.AssignmentOperator))
+	flag.Var(HeaderList, "H", fmt.Sprintf("allows to specify list of headers to be passed during handshake (both in client or server)\n\tformat:\n\t\t{ key %s value }", headers.AssignmentOperator))
+}
+
+type headerList struct {
+	list http.Header
+}
+
+func newHeaderList() *headerList {
+	return &headerList{
+		list: make(http.Header),
+	}
+}
+
+func (h *headerList) Set(s string) error {
+	k, v, err := headersUtil.ParseOne(s)
+	if err != nil {
+		return err
+	}
+	h.list.Add(k, v)
+	return nil
+}
+
+func (h *headerList) String() string {
+	return fmt.Sprintf("%v", h.list)
 }
 
 const headerOrigin = "Origin"
@@ -38,11 +63,7 @@ type Config struct {
 }
 
 func Parse() (c Config, err error) {
-	headers, err := headersUtil.Parse(Headers)
-	if err != nil {
-		return
-	}
-
+	headers := HeaderList.list
 	uri, err := parseURL(URI)
 	if err != nil {
 		return
