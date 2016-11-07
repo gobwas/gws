@@ -1,6 +1,9 @@
 package mod
 
-import "github.com/yuin/gopher-lua"
+import (
+	"github.com/gobwas/gws/lua/util"
+	"github.com/yuin/gopher-lua"
+)
 
 type Module interface {
 	Exports() lua.LGFunction
@@ -39,11 +42,19 @@ func (s *Storage) ExportGet(L *lua.LState) *lua.LFunction {
 	return L.NewClosure(func(L *lua.LState) int {
 		key := L.ToString(1)
 		switch v := s.Get(key).(type) {
+		case map[string]string:
+			L.Push(util.MapOfStringToTable(L, v))
+		case map[string]interface{}:
+			L.Push(util.MapOfInterfaceToTable(L, v))
 		case lua.LValue:
 			L.Push(v)
 		case string:
 			L.Push(lua.LString(v))
 		case int:
+			L.Push(lua.LNumber(v))
+		case uint:
+			L.Push(lua.LNumber(v))
+		case float64:
 			L.Push(lua.LNumber(v))
 		default:
 			L.Push(lua.LNil)
