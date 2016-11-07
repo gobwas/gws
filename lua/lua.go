@@ -4,6 +4,14 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io/ioutil"
+	"log"
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/gobwas/gws/bufio"
 	"github.com/gobwas/gws/cli"
 	"github.com/gobwas/gws/cli/color"
@@ -18,12 +26,6 @@ import (
 	"github.com/gobwas/gws/lua/script"
 	"github.com/gobwas/gws/lua/util"
 	"github.com/gobwas/gws/stat"
-	"io/ioutil"
-	"log"
-	"os"
-	"os/signal"
-	"sync"
-	"time"
 )
 
 var scriptFile = flag.String("path", "", "path to lua script")
@@ -33,6 +35,15 @@ func initRunTime(loop *ev.Loop, c config.Config) *modRuntime.Runtime {
 	rtime.Set("url", c.URI)
 	rtime.Set("listen", c.Addr)
 	rtime.Set("headers", util.HeadersToMap(c.Headers))
+
+	environment := os.Environ()
+	env := make(map[string]string, len(environment))
+	for _, e := range environment {
+		pair := strings.Split(e, "=")
+		env[pair[0]] = pair[1]
+	}
+	rtime.Set("env", env)
+
 	return rtime
 }
 
