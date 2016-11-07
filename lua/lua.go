@@ -80,9 +80,8 @@ func Go(c config.Config) error {
 		str = systemStdout.String()
 		return
 	})
-	if *useDisplay {
-		printer.On()
-	}
+
+	printer.On()
 	defer printer.Off()
 	defer printer.Render()
 
@@ -104,11 +103,7 @@ func Go(c config.Config) error {
 	luaScript := script.New()
 	defer luaScript.Shutdown()
 
-	if *useDisplay {
-		luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green("master > ")))
-	} else {
-		luaScript.HijackOutput(bufio.NewPrefixWriter(os.Stderr, color.Green("master > ")))
-	}
+	luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green("master > ")))
 
 	loop := ev.NewLoop()
 
