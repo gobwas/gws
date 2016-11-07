@@ -29,6 +29,7 @@ import (
 )
 
 var scriptFile = flag.String("path", "", "path to lua script")
+var useDisplay = flag.Bool("display", false, "use display ouput")
 
 func initRunTime(loop *ev.Loop, c config.Config) *modRuntime.Runtime {
 	rtime := modRuntime.New(loop)
@@ -79,7 +80,9 @@ func Go(c config.Config) error {
 		str = systemStdout.String()
 		return
 	})
-	printer.On()
+	if *useDisplay {
+		printer.On()
+	}
 	defer printer.Off()
 	defer printer.Render()
 
@@ -101,7 +104,11 @@ func Go(c config.Config) error {
 	luaScript := script.New()
 	defer luaScript.Shutdown()
 
-	luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green("master > ")))
+	if *useDisplay {
+		luaScript.HijackOutput(bufio.NewPrefixWriter(luaStdout, color.Green("master > ")))
+	} else {
+		luaScript.HijackOutput(bufio.NewPrefixWriter(os.Stderr, color.Green("master > ")))
+	}
 
 	loop := ev.NewLoop()
 
