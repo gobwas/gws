@@ -7,10 +7,13 @@ import (
 	"github.com/gorilla/websocket"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
+	"time"
 )
 
 var insecure = flag.Bool("insecure", false, "do not check tls certificate during dialing")
+var keepalive = flag.Duration("keepalive", time.Minute*60, "how long to ws connection should be alive")
 
 type Kind int
 
@@ -172,7 +175,14 @@ func ReadAsyncFromConn(done <-chan struct{}, conn *websocket.Conn) <-chan Messag
 }
 
 func GetConn(uri string, h http.Header) (conn *websocket.Conn, resp *http.Response, err error) {
-	dialer := &websocket.Dialer{}
+	dialer := &websocket.Dialer{
+		NetDial: func(network, addr string) (net.Conn, error) {
+			netDialer := &net.Dialer{
+				KeepAlive: *keepalive,
+			}
+			return netDialer.Dial(network, addr)
+		},
+	}
 	if *insecure {
 		dialer.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true,
