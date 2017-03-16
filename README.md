@@ -42,7 +42,7 @@ Usage info:
 Usage of gws:
 gws client|server|script [options]
 options:
-  -headers string
+  -header string
         list of headers to be passed during handshake (both in client or server)
         format:
                 { pair[ ";" pair...] },
