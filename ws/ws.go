@@ -3,13 +3,15 @@ package ws
 import (
 	"crypto/tls"
 	"flag"
-	"github.com/gobwas/glob"
-	"github.com/gorilla/websocket"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/gobwas/glob"
+	"github.com/gorilla/websocket"
 )
 
 var insecure = flag.Bool("insecure", false, "do not check tls certificate during dialing")
@@ -142,6 +144,30 @@ func ReadFromConn(conn *websocket.Conn) (msg MessageRaw, err error) {
 //todo refactor this to dedup
 func ReadFromConnInto(done <-chan struct{}, conn *websocket.Conn, ch chan<- Message) {
 	go func() {
+		closeHandler := conn.CloseHandler()
+		defer conn.SetCloseHandler(closeHandler)
+		conn.SetCloseHandler(func(code int, text string) error {
+			ch <- Message{
+				Data: []byte(fmt.Sprintf("%d: %s", code, text)),
+				Kind: CloseMessage,
+			}
+			return closeHandler(code, text)
+		})
+
+		pingHandler := conn.PingHandler()
+		defer conn.SetPingHandler(pingHandler)
+		conn.SetPingHandler(func(data string) error {
+			ch <- Message{Data: []byte(data), Kind: PingMessage}
+			return pingHandler(data)
+		})
+
+		pongHandler := conn.PongHandler()
+		defer conn.SetPongHandler(pongHandler)
+		conn.SetPongHandler(func(data string) error {
+			ch <- Message{Data: []byte(data), Kind: PongMessage}
+			return pongHandler(data)
+		})
+
 		for {
 			var msg Message
 			t, r, err := conn.NextReader()
